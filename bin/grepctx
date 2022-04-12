@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2022 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""grepctx - grep lines with context
+
+Usage: grepctx [options] REGEXP [FILE...]
+
+Options:
+  -h, --help      print help.
+  -e REGEXP       search for REGEXP, can be given multiple times.
+  -H              prefix each line with filename.
+  -i              ignore case distinctions in REGEXPs and input data.
+  -n              prefix each line with line number within its input file.
+  -r, --recursive read all files under each directory, recursively.
+  -R              same as -r, but dereference symbolic links.
+  -s, --no-messages suppress error messages on skipped files and directories.
+  -v, --invert-match same as grep.
+  --line-buffered unbuffered input and output. Can cause performance penalty.
+  --out OUTFILE   write output to OUTFILE. The default is stdout.
+  --format FORMAT output line format. The default is '%(lineno)d  %(line)s'.
+                  Fields available in the format:
+                    - lineno: line number
+                    - line: line contents
+                    - file: file name
+                    - level: indentation level as a number
+  --depth NUM     print NUM levels of indentation context starting from match.
+  --irs IRS       use IRS as input record separator instead of new line,
+                  enables matching strings from multiple lines.
+  --igrep         use grep/grepctx output record separator as IRS.
+                  Shorthand for --irs '\\n--\\n'.
+
+Examples:
+  # Show where variable i is assigned to
+  grepctx '\s*i\s*=' *.py
+  # Find *.go files where "yaml" appears in a "import" section:
+  grepctx yaml *.go | grepctx --igrep import
+"""
+
+import getopt
+import os
+import re
+import sys
+
+g_command = "grepctx"
+
+def error(msg, exit_status=1):
+    """print error message and exit"""
+    if msg:
+        sys.stderr.write("%s: %s\n" % (g_command, msg))
+    if exit_status != None:
+        sys.exit(1)
+
+def errormsg(msg):
+    """print error message unless suppressed (--no-message)"""
+    if not opt_no_messages:
+        sys.stderr.write("%s: %s\n" % (g_command, msg))
+
+def unbuffered_xreadlines(fileobj, irs):
+    """like fileobj.xreadlines() but unbuffered"""
+    ln = []
+    irs_len = len(irs)
+    while True:
+        c = fileobj.read(1)
+        if not c:
+            if ln:
+                yield "".join(ln)
+            break
+        ln.append(c)
+        if irs_len == 1:
+            # fast path
+            if c == irs:
+                yield "".join(ln)
+                ln = []
+        elif "".join(ln[-irs_len:]) == irs:
+            yield "".join(ln)
+            ln = []
+
+def output(out_line):
+    for out_file in opt_outfiles:
+        out_file.write(out_line)
+        if opt_unbuffered_out:
+            out_file.flush()
+
+def _grep_lines(line_iter):
+    ctx_indentation = {}
+    max_level = -1
+    min_visible_level = -1
+    max_visible_level = -1
+    for line_index, line in enumerate(line_iter):
+        if len(line) < 2: # empty line: only linefeed
+            continue
+        indentation_level = len(line) - len(line.lstrip())
+        if indentation_level <= min_visible_level:
+            max_visible_level = -1
+            min_visible_level = -1
+        if indentation_level >= max_level:
+            max_level = indentation_level
+        else:
+            for old_level in range(indentation_level + 1, max_level + 1):
+                if old_level in ctx_indentation:
+                    del ctx_indentation[old_level]
+        ctx_indentation[indentation_level] = {'lineno': line_index + 1, 'line': line, 'level': indentation_level, 'file': in_file_name}
+        if min_visible_level <= indentation_level <= max_visible_level:
+            output(opt_format % ctx_indentation[indentation_level])
+        else:
+            for regexp in regexps:
+                m = regexp.search(line)
+                if (m and not opt_invert_match) or (m is None and opt_invert_match):
+                    output("--\n")
+                    for i in range(indentation_level + 1):
+                        if i in ctx_indentation:
+                            output(opt_format % ctx_indentation[i])
+                    if opt_depth and max_visible_level == -1:
+                        if min_visible_level == -1:
+                            min_visible_level = indentation_level + 1
+                        max_visible_level = indentation_level + opt_depth
+
+if __name__ == "__main__":
+    opt_outfiles = []
+    opt_regexps = []
+    opt_unbuffered_in = False
+    opt_unbuffered_out = False
+    opt_with_filename = False
+    opt_with_line_number = False
+    opt_format = None
+    opt_ignore_case = 0
+    opt_recursive = False
+    opt_dereference_recursive = False
+    opt_no_messages = False
+    opt_depth = 0
+    opt_invert_match = False
+    opt_irs = '\n'
+    opts, remainder = getopt.gnu_getopt(
+        sys.argv[1:], 'hHine:rRsv',
+        ['help', 'format=', 'out=', 'line-buffered',
+         'ignore-case', 'recursive', 'dereference-recursive', 'no-messages',
+         'depth=', 'irs=', 'igrep', 'invert-match',
+         # for compatibilty with GNU grep, but no-operation
+         'color', 'null'])
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            sys.exit(0)
+        elif opt in ["--out"]:
+            if arg == "stdout":
+                opt_outfiles.append(sys.stdout)
+            elif arg == "stderr":
+                opt_outfiles.append(sys.stderr)
+            else:
+                opt_outfiles.append(open(arg, "w"))
+        elif opt in ["--format"]:
+            opt_format = arg
+        elif opt in ["-e"]:
+            opt_regexps.append(arg)
+        elif opt in ["-r", "--recursive"]:
+            opt_recursive = True
+        elif opt in ["-R", "--dereference-recursive"]:
+            opt_dereference_recursive = True
+        elif opt in ["-s", "--no-messages"]:
+            opt_no_messages = True
+        elif opt in ["-n"]:
+            opt_with_line_number = True
+        elif opt in ["-H"]:
+            opt_with_filename = True
+        elif opt in ["-i", "--ignore-case"]:
+            opt_ignore_case = re.IGNORECASE
+        elif opt in ["-v", "--invert-match"]:
+            opt_invert_match = True
+        elif opt in ["--irs"]:
+            opt_irs = arg.replace(r'\n', '\n').replace(r'\t', '\t')
+        elif opt in ["--igrep"]:
+            opt_irs = '\n--\n'
+        elif opt in ["--line-buffered"]:
+            opt_unbuffered_in = True
+            opt_unbuffered_out = True
+        elif opt in ["--depth"]:
+            try:
+                opt_depth = int(arg)
+            except:
+                error('invalid --depth number %r' % (arg,))
+
+    # Parse REGEXP from parameters unless already given with -e
+    if len(opt_regexps) == 0:
+        if len(remainder) == 0:
+            error('missing REGEXP, see --help')
+        opt_regexps.append(remainder.pop(0))
+    regexps = []
+    for regexp in opt_regexps:
+        try:
+            regexps.append(re.compile(regexp, flags=opt_ignore_case))
+        except Exception as e:
+            error('invalid REGEXP %r: %s' % (regexp, e))
+
+    # Parse optional input files from parameters
+    opt_in_files = remainder
+    if not opt_in_files:
+        opt_in_files = ["stdin"]
+    if len(opt_in_files) > 1 or opt_recursive or opt_dereference_recursive:
+        opt_with_filename = True
+
+    # Build format string unless raw format is defined with -f FORMAT
+    if opt_format is None:
+        opt_format = "%(line)s"
+        if opt_with_line_number:
+            opt_format = "%(lineno)s:" + opt_format
+        if opt_with_filename:
+            opt_format = "%(file)s:" + opt_format
+    else:
+        opt_format = opt_format.replace('\\n', '\n').replace('\\t', '\t')
+
+    if not opt_outfiles:
+        opt_outfiles.append(sys.stdout)
+
+    opt_in_files.reverse() # use as a stack
+    while opt_in_files:
+        in_file_name = opt_in_files.pop()
+        if in_file_name in ["-", "stdin"]:
+            in_file = sys.stdin
+        else:
+            if os.path.isdir(in_file_name):
+                if (opt_recursive and not os.path.islink(in_file_name) or
+                    opt_dereference_recursive):
+                    try:
+                        rootdir, subdirs, files = os.walk(in_file_name).send(None)
+                        opt_in_files.extend([rootdir + "/" + d for d in subdirs])
+                        opt_in_files.extend([rootdir + "/" + f for f in files])
+                    except StopIteration:
+                        pass
+                else:
+                    errormsg('skip directory: %r' % (in_file_name,))
+                continue
+            try:
+                in_file = open(in_file_name)
+            except Exception as e:
+                errormsg('cannot read file %r: %s' % (in_file_name, e))
+        if opt_unbuffered_in or opt_irs != '\n':
+            line_iter = unbuffered_xreadlines(in_file, opt_irs)
+        else:
+            line_iter = in_file
+        try:
+            _grep_lines(line_iter)
+        except UnicodeDecodeError:
+            errormsg('skip binary file %r' % (in_file_name),)

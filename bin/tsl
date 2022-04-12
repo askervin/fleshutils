@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2022 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""tsl - timestamp lines
+
+Usage: tsl [options]
+
+Options:
+  -h, --help      print help.
+  -f TIMEFORMAT   use TIMEFORMAT as output timestamp format (man strftime).
+                  The default format is "%s.%f".
+  -F LINEFORMAT   use LINEFORMAT as line output format:
+                  - %(fl)f: time elapsed since first line
+                  - %(pl)f: time elapsed since previous line
+                  - %(ts)s: TimeStamp
+                  - %(line)s: original line
+                  The default is "%(ts)s %(line)s".
+  -o OUTFILE      write output lines to OUTFILE. Supports many -o's.
+                  Special outfiles:
+                  - stdout: standard output
+                  - stderr: standard error
+  -u              unbuffered input: more accurate timestamps, slower throughput.
+  -U              unbuffered output: flush after every line, slower throughput.
+
+Examples:
+
+1. Prefix lines with elapsed time in milliseconds between observed outputs:
+   cmd | tsl -u -F "%(pl)6.3f %(line)s"
+
+2. Record outputs of two concurrent processes,
+   prefix lines with timestamp and command label,
+   and combine output sorted by timestamps.
+
+   cmd1 | tsl -u -F "%(ts)s cmd1: %(line)s" > cmd1.tsl &
+   cmd2 | tsl -u -F "%(ts)s cmd2: %(line)s" > cmd2.tsl &
+   wait
+   cat cmd1.tsl cmd2.tsl | sort -n > cmd1_cmd2.output
+"""
+
+import getopt
+import sys
+import datetime
+
+def unbuffered_xreadlines(fileobj):
+    """like fileobj.xreadlines() but unbuffered"""
+    ln = []
+    while True:
+        c = fileobj.read(1)
+        if not c:
+            if ln:
+                yield "".join(ln)
+            break
+        ln.append(c)
+        if c == "\n":
+            yield "".join(ln)
+            ln = []
+
+if __name__ == "__main__":
+    opt_timeformat = "%s.%f" #"%Y-%m-%d %H:%M:%S"
+    opt_lineformat = "%(ts)s %(line)s"
+    opt_unbuffered_in = False
+    opt_unbuffered_out = False
+    opt_outfiles = []
+    opts, remainder = getopt.gnu_getopt(
+        sys.argv[1:], 'hf:F:o:uU',
+        ['help', 'format='])
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            sys.exit(0)
+        elif opt in ["-f", "--format"]:
+            opt_timeformat = arg
+        elif opt in ["-F"]:
+            opt_lineformat = arg
+        elif opt in ["-o"]:
+            if arg == "stdout":
+                opt_outfiles.append(sys.stdout)
+            elif arg == "stderr":
+                opt_outfiles.append(sys.stderr)
+            else:
+                opt_outfiles.append(open(arg, "w"))
+        elif opt in ["-u"]:
+            opt_unbuffered_in = True
+        elif opt in ["-U"]:
+            opt_unbuffered_out = True
+    if not opt_outfiles:
+        opt_outfiles.append(sys.stdout)
+    if opt_unbuffered_in:
+        line_iter = unbuffered_xreadlines(sys.stdin)
+    else:
+        line_iter = sys.stdin
+    tprevline = None
+    tfirstline = None
+    for line in line_iter:
+        tnow = datetime.datetime.now()
+        if tfirstline is None:
+            tprevline = tnow
+            tfirstline = tnow
+        ts = tnow.strftime(opt_timeformat)
+        out_line = opt_lineformat % {
+            'fl': (tnow - tfirstline).total_seconds(),
+            'pl': (tnow - tprevline).total_seconds(),
+            'ts': ts,
+            'line': line,
+        }
+        tprevline = tnow
+        for outfile in opt_outfiles:
+            outfile.write(out_line)
+            if opt_unbuffered_out:
+                outfile.flush()

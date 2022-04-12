@@ -1,0 +1,34 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+    @fd[0,0]=0;
+}
+
+tracepoint:syscalls:sys_enter_open,
+tracepoint:syscalls:sys_enter_openat
+{
+    @filename[tid] = args->filename;
+}
+
+tracepoint:syscalls:sys_exit_open,
+tracepoint:syscalls:sys_exit_openat
+/@filename[tid]/
+{
+    $ts = nsecs/1000;
+    $ret = args->ret;
+    $fd = $ret > 0 ? $ret : -1;
+    if ($fd > -1) {
+        @fd[pid,$fd]=@filename[tid];
+        /* printf("%ld open*_exit pid=%d.%d (%s) filename=\"%s\" fd=%ld\n", $ts, pid, $fd, comm, str(@filename[tid]), $fd); */
+    }
+    delete(@filename[tid]);
+}
+
+tracepoint:syscalls:sys_enter_write
+/@fd[pid,args->fd]/
+{
+    $ts = nsecs/1000;
+    printf("%ld write: %d (%s) \"%s\" ", $ts, pid, comm, str(@fd[pid,args->fd]));
+    printf("\"%s...\" n=%ld\n", str(args->buf,8), args->count);
+    delete(@fd[pid,args->fd]);
+}

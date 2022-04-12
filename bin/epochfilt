@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2022 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""epochfilt - reformat epoch timestamps
+
+Usage: epochfilt [options]
+
+Options:
+  -h, --help      print help.
+  -f FORMAT       use FORMAT as output timeformat (man strftime).
+                  The default format is "%Y-%m-%d %H:%M:%S".
+  -r              reverse: convert timestamp from FORMAT to epoch.
+  -u              unbuffered mode: slower throughput but smaller delays.
+
+Examples:
+  date +%s | epochfilt
+  epochfilt -f "%T" < pythonshare-server.log | less
+  echo '2020-01-02 14:20' | epochfilt -r -f '%Y-%m-%d %H:%M'
+"""
+
+import getopt
+import re
+import sys
+import time
+
+def unbuffered_xreadlines(fileobj):
+    """like fileobj.xreadlines() but unbuffered"""
+    ln = []
+    while True:
+        c = fileobj.read(1)
+        if not c:
+            if ln:
+                yield "".join(ln)
+            break
+        ln.append(c)
+        if c == "\n":
+            yield "".join(ln)
+            ln = []
+
+if __name__ == "__main__":
+    opt_timeformat = "%Y-%m-%d %H:%M:%S"
+    opt_unbuffered = False
+    opt_reverse = False
+    opts, remainder = getopt.gnu_getopt(
+        sys.argv[1:], 'hf:ur',
+        ['help', 'format='])
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            sys.exit(0)
+        elif opt in ["-f", "--format"]:
+            opt_timeformat = arg
+        elif opt in ["-r"]:
+            opt_reverse = True
+        elif opt in ["-u"]:
+            opt_unbuffered = True
+    if not opt_reverse:
+        # timestamp regexp matching epoch time
+        timestamp_re = re.compile(r'(1[4-5][0-9]{8})([^0-9]|$)')
+    else:
+        # timestamp regexp matching opt_timeformat
+        time_str = time.strftime(opt_timeformat)
+        timestamp_re = re.compile("(" + re.sub('[0-9]', '[0-9]', time_str) + ")(.|$)")
+    if opt_unbuffered:
+        line_iter = unbuffered_xreadlines(sys.stdin)
+    else:
+        line_iter = sys.stdin
+    for line in line_iter:
+        l = timestamp_re.findall(line)
+        for timestamp, sth_else in l:
+            if not opt_reverse:
+                formatted = time.strftime(opt_timeformat,
+                                          time.localtime(int(timestamp)))
+            else:
+                formatted = str(time.mktime(time.strptime(timestamp, opt_timeformat)))
+            line = line.replace(timestamp + sth_else, formatted + sth_else)
+        sys.stdout.write(line)
+        if opt_unbuffered:
+            sys.stdout.flush()

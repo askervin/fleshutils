@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+#
+# WARNING: This script is under construction!
+#
+# Copyright (c) 2022 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+
+import re
+import subprocess
+import sys
+
+opt_debug = 0
+
+def error(msg, exit_status=1):
+    sys.stderr.write("conngraph: %s\n" % (msg,))
+    if exit_status is not None:
+        sys.exit(exit_status)
+
+def warning(msg):
+    sys.stderr.write("conngraph warning: %s\n" % (msg,))
+
+def output(s):
+    sys.stdout.write(s)
+
+def outerr(cmd, str_stdin=""):
+    if opt_debug:
+        output("DEBUG: launch %r\n" % (cmd,))
+    try:
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except e:
+        if opt_debug:
+            output("DEBUG: run exeption: %s" % (e,))
+        return "", "cannot run " + str(cmd)+ ": " + str(e)
+    p.stdin.write(str_stdin.encode("utf8"))
+    out, err = p.communicate()
+    if opt_debug > 1:
+        output("DEBUG: stdout: %r\n" % (out,))
+        output("DEBUG: stderr: %r\n" % (err,))
+    return out.decode("utf8"), err.decode("utf8")
+
+class ss:
+    def __init__(self, netid, state, recvq, sendq, local_addr, local_port, peer_addr, peer_port, process):
+        self.netid = netid
+        self.state = state
+        self.recvq = recvq
+        self.sendq = sendq
+        self.local_addr = local_addr
+        self.local_port = local_port
+        self.peer_addr = peer_addr
+        self.peer_port = peer_port
+        self.process = process
+        self.pids = [int(pid) for pid in re.findall('pid=([0-9]+)', process)]
+    def __str__(self):
+        return "%s %s %s %s %s %s %s %s %s" % (self.netid, self.state, self.recvq, self.sendq, self.local_addr, self.local_port, self.peer_addr, self.peer_port, self.process)
+
+class Connections:
+    pass
+
+def parse_ss_line(line):
+    if " TIME-WAIT " in line or " UNCONN " in line:
+        return None
+    if line.startswith("tcp"):
+        if "]:" in line: # space-separate ipv6 addr:port
+            line = line.replace("]:", "] ")
+        else: # space-separate ipv4 addr:port
+            line = line.replace(":", " ", 2)
+    try:
+        netid, state, recvq, sendq, local_addr, local_port, peer_addr, peer_port, process = line.split()
+    except:
+        warning("parse error on ss line: %r" % (line,))
+        return None
+    return ss(netid, state, recvq, sendq, local_addr, local_port, peer_addr, peer_port, process)
+
+def read_connections():
+    port_port = {} # connections
+    port_listener = {}
+    client_server = {}
+    server_client = {}
+    peer_peer = {}
+    pid_port = {}
+    ss_output = outerr(["ss", "-a", "-n", "-p"])[0]
+    parsed_lines = []
+    for line in [l.strip() for l in ss_output.splitlines()]:
+        ssline = parse_ss_line(line)
+        if ssline is None:
+            continue
+        parsed_lines.append(ssline)
+    for ssline in parsed_lines:
+        if ssline.state == "LISTEN":
+            if ssline.local_port not in port_listener:
+                port_listener[ssline.local_port] = []
+            port_listener[ssline.local_port].append(ssline)
+    for ssline in parsed_lines:
+        if ssline.state == "ESTAB":
+            if ssline.peer_port in port_listener:
+                if ssline.local_port not in client_server:
+                    client_server[ssline.local_port] = []
+                client_server[ssline.local_port].append(ssline)
+            if ssline.local_port in port_listener:
+                if ssline.local_port not in server_client:
+                    server_client[ssline.local_port] = []
+                server_client[ssline.local_port].append(ssline)
+            if ssline.local_port not in peer_peer:
+                peer_peer[ssline.local_port] = []
+            peer_peer[ssline.local_port].append(ssline)
+    for ssline in parsed_lines:
+        for pid in ssline.pids:
+            if not pid in pid_port:
+                pid_port[pid] = set()
+            pid_port[pid].add(ssline.local_port)
+    c = Connections()
+    c.port_listener = port_listener
+    c.server_client = server_client
+    c.client_server = client_server
+    c.peer_peer = peer_peer
+    c.pid_port = pid_port
+    return c
+
+if __name__ == "__main__":
+    c = read_connections()
+    pid = int(sys.argv[1])
+    client_to_pids = set()
+    server_to_pids = set()
+
+    for port in sorted(c.pid_port.get(pid, [])):
+        printed = False
+        for ssline in c.port_listener.get(port, []):
+            output("listens to port %s in %s\n" % (ssline.local_port, ssline.local_addr))
+            printed = True
+        for clientline in c.client_server.get(port, []):
+            for serverline in c.port_listener.get(clientline.peer_port, []):
+                output("connected from %s to server %s:%s %s\n" % (port, serverline.local_addr, serverline.local_port, serverline.process))
+                for serverpid in serverline.pids:
+                    server_to_pids.add(serverpid)
+                printed = True
+        for serverline in c.server_client.get(port, []):
+            for peerline in c.peer_peer.get(serverline.peer_port, []):
+                output("accepted in %s from client %s:%s %s\n" % (port, peerline.local_addr, peerline.local_port, peerline.process))
+                for clientpid in peerline.pids:
+                    client_to_pids.add(clientpid)
+                printed = True
+        if not printed:
+            output("pid %s has port %s but did not find users\n" % (pid, port))
+    output("TODO: UNIX SOCKET CONNECTION MATCHING NOT WORKING\n")
+    output("serve pids: %s\n" % (sorted(server_to_pids),))
+    output("client pids: %s\n" % (sorted(client_to_pids),))

@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2022 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""procdata - print selected process and parent data under proc
+
+Usage: procdata [options] [PID...]
+
+Options:
+  -h, --help              print help.
+  -f, --format FORMAT     output FORMAT, "json" or format string.
+                          The default is "%(pid)s %(key)r: %(value)r\\n".
+  -p, --pid PID ...       print DATA from PID
+  -P, --parents PID ...   print DATA from PID and its parents
+  -C, --children PID ...  print DATA from PID and its children
+  -d, --data DATA         print DATA, that can be
+                          - a symlink under /proc/PID:
+                            "cwd", "exe" or "fd/1" (stdout)
+                          - FILE.FIELD_IN_FILE under /proc/PID
+                            (like environ.http_proxy or "limits.Max cpu time")
+
+Examples:
+  # Print http_proxy in the process tree branch of curl
+  procdata -P $(pidof curl) -d environ.http_proxy
+
+  # Print executables and current working directories of in this
+  # process branch in json format
+  procdata -P self -d exe -d cwd -f json | jq
+
+  # Print how standard input, output and error are redirected
+  procdata -P $$ -d exe -d fd/0 -d fd/1 -d fd/2
+
+  # Print 'Cpus_allowed:' from children of all containerd-shim processes
+  procdata -d status.Cpus_allowed: -C $(pgrep containerd-shim)
+"""
+
+import getopt
+import glob
+import json
+import os
+import sys
+
+g_command = "procdata"
+opt_format = "%(pid)s %(key)r: %(value)r\n"
+output_json = []
+
+def error(msg, exit_status=1):
+    """print error message and exit"""
+    if msg:
+        sys.stderr.write("%s: %s\n" % (g_command, msg))
+    if exit_status != None:
+        sys.exit(1)
+
+def output(msg):
+    sys.stdout.write(msg)
+
+def output_data(datadict):
+    if opt_format != "json":
+        output(opt_format % datadict)
+    else:
+        try:
+            json_dict = [d for d in output_json if d['pid'] == datadict['pid']][0]
+        except IndexError:
+            json_dict = {'pid': datadict['pid']}
+            output_json.append(json_dict)
+        json_dict.update({datadict['key']: datadict['value']})
+
+def output_pid(pid, features=[]):
+    for f in features:
+        feature_filename = "/proc/%s/%s" % (pid, f.split(".")[0])
+        if "." in f:
+            feature_items = f.split(".", 1)[1]
+        else:
+            feature_items = None
+        if f == "ppid": # special features
+            result = ppid
+        elif os.path.islink(feature_filename): # symlinks like cwd, exe, root
+            try:
+                result = os.readlink(feature_filename)
+            except:
+                result = "ERROR reading link %r" % (feature_filename,)
+        elif os.path.isfile(feature_filename):
+            try:
+                file_contents = open(feature_filename).read()
+                if "\x00" in file_contents: # null-separated file
+                    sep = "\x00"
+                else:
+                    sep = "\n"
+                result = file_contents.split(sep)
+                if result[-1] == "": # drop last line/null-separated field if empty
+                    result = result[:-1]
+                if feature_items:
+                    result = [i for i in result if feature_items in i]
+            except:
+                result = "ERROR reading file %r" % (feature_filename,)
+        else:
+            result = "ERROR not available: %r" % (feature_filename,)
+        output_data({'pid': pid, 'key': f, 'value': result})
+
+def output_parents(pid, features=[]):
+    try:
+        ppid = [l.strip().split()[1]
+                for l in open("/proc/%s/status" % (pid,)).readlines()
+                if l.startswith("PPid:")][0]
+    except:
+        return
+    output_parents(ppid, features)
+    output_pid(pid, features)
+
+_pid_children = {}
+def output_children(pid, features=[]):
+    if not _pid_children:
+        # construct map {pid: list-of-pids-of-children}
+        statuses = glob.glob("/proc/[0-9]*/status")
+        for f in statuses:
+            try:
+                _ppid = [l.strip().split()[1] for l in open(f).readlines() if l.startswith("PPid:")][0]
+                _pid = f.split("/")[2]
+                if not _ppid in _pid_children:
+                    _pid_children[_ppid] = []
+                _pid_children[_ppid].append(_pid)
+            except:
+                continue
+    output_pid(pid, features)
+    for cpid in sorted(_pid_children.get(pid, [])):
+        output_children(cpid, features)
+
+if __name__ == "__main__":
+    opt_pids = []
+    opt_parents = []
+    opt_children = []
+    opt_data = []
+
+    try:
+        opts, remainder = getopt.gnu_getopt(
+            sys.argv[1:], 'hf:p:P:C:d:',
+            ['help', 'data=', 'format=', 'pid=', 'parents=', 'children='])
+    except Exception as e:
+        error(e)
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            sys.exit(0)
+        elif opt in ["-p", "--pid"]:
+            opt_pids.append(arg)
+        elif opt in ["-P", "--parents"]:
+            opt_parents.append(arg)
+        elif opt in ["-C", "--children"]:
+            opt_children.append(arg)
+        elif opt in ["-d", "--data"]:
+            opt_data.append(arg)
+        elif opt in ["-f", "--format"]:
+            opt_format = arg
+
+    if remainder:
+        if opt_parents:
+            opt_parents.extend(remainder)
+        elif opt_children:
+            opt_children.extend(remainder)
+        else:
+            opt_pids.extend(remainder)
+
+    if not opt_pids and not opt_parents and not opt_children:
+        opt_parents = ['self']
+
+    if not opt_data:
+        error("missing -d/--data DATA to print")
+
+    for pid_index, pid in enumerate(opt_pids):
+        if opt_format != "json" and pid_index > 0 and len(opt_data) > 1:
+            output("--\n")
+        output_pid(pid, opt_data)
+
+    for pid_index, pid in enumerate(opt_parents):
+        if opt_format != "json" and pid_index > 0:
+            output("--\n")
+        output_parents(pid, opt_data)
+
+    for pid_index, pid in enumerate(opt_children):
+        if opt_format != "json" and pid_index > 0:
+            output("--\n")
+        output_children(pid, opt_data)
+
+    if output_json:
+        output(json.dumps(output_json))

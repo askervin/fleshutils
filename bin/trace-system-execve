@@ -1,0 +1,6 @@
+#!/usr/bin/env bpftrace
+
+tracepoint:syscalls:sys_enter_execve {
+    $ts = nsecs/1000;
+    printf("%ld execve_enter:   pid=%d (%s) filename=\"%s\" argv=", $ts, pid, comm, str(args->filename)); join(args->argv, " ");
+}

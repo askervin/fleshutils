@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2022 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+r"""tinypwd - print working directory, but make it short
+
+Usage: tinypwd
+
+Environment variables:
+  TINYPWD_DIR=DIRLEN            shorten each directory name up to DIRLEN
+                                characters.
+  TINYPWD_PATH=PATHLEN          shorten full PATH length up to PATHLEN
+                                characters.
+  TINYPWD_ANSI=<0|1>            highlight shortened parts with ANSI underline.
+
+Example: nice working directory presentation in command prompt
+$ export TINYPWD_DIR=14 TINYPWD_PATH=50
+$ export PS1='\u@\h:$(tinypwd)\$ '
+"""
+
+import os
+import sys
+
+if "-p" in sys.argv or os.getenv("TINYPWD_PROMPT") == "1":
+    prompt_mode = 1
+else:
+    prompt_mode = 0
+
+max_dir = 0
+try:
+    max_dir = int(os.getenv("TINYPWD_DIR", max_dir))
+except:
+    print("(bad TINYPWD_DIR)")
+
+max_path = 42
+try:
+    max_path = int(os.getenv("TINYPWD_PATH", max_path))
+except:
+    print("(bad TINYPWD_PATH)")
+
+if "-a" in sys.argv:
+    ansi_term = 1
+else:
+    ansi_term = 0
+    try:
+        ansi_term = int(os.getenv("TINYPWD_ANSI", ansi_term))
+    except:
+        print("(bad TINYPWD_ANSI)")
+
+home = os.getenv("HOME", None)
+
+if ansi_term:
+    ansi_underline_start = '\033[4m'
+    ansi_underline_stop = '\033[24m'
+    if prompt_mode:
+        ansi_underline_start = r'\[' + ansi_underline_start + r'\]'
+        ansi_underline_stop = r'\[' + ansi_underline_stop + r'\]'
+else:
+    ansi_underline_start = ""
+    ansi_underline_stop = ""
+
+def shorten_dir(dirname):
+    if max_dir == 0 or len(dirname) <= max_dir:
+        return len(dirname), dirname
+    prefix_len = max((max_dir + 1) // 2, 1)
+    suffix_len = max_dir - prefix_len
+    prefix = dirname[:prefix_len]
+    if suffix_len <= 0:
+        suffix = ""
+    else:
+        suffix = dirname[-suffix_len:]
+    return len(prefix+suffix), ansi_underline_start + prefix + "*" + suffix + ansi_underline_stop
+
+cwd = os.getcwd()
+if home:
+    if cwd == home:
+        cwd = "~"
+    elif cwd.startswith(home + "/"):
+        cwd = "~/" + cwd[len(home + "/"):]
+    elif cwd.startswith("/home/"):
+        cwd = "~" + cwd[len("/home/"):]
+
+shortened_dirs = []
+dirnames = cwd.split("/")
+for dirname in dirnames:
+    shortened_dirs.append(shorten_dir(dirname))
+
+tinypwd_len = 0
+tinypwd_path = []
+for sd_len, sd in shortened_dirs[::-1]:
+    if tinypwd_len + sd_len > max_path:
+        tinypwd_path.append(ansi_underline_start + "..." + ansi_underline_stop)
+        break
+    tinypwd_len += sd_len + 1 # +1 for "/" between dirs
+    tinypwd_path.append(sd)
+
+print("/".join(tinypwd_path[::-1]))

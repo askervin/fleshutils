@@ -1,0 +1,101 @@
+#!/usr/bin/env bpftrace
+
+#include <linux/socket.h>
+#include <linux/in.h>
+
+tracepoint:syscalls:sys_enter_connect {
+    $ts = nsecs/1000;
+    $addr_in = (struct sockaddr_in*)args->uservaddr;
+    $addr = ntop($addr_in->sin_addr.s_addr);
+    $hport = (($addr_in->sin_port & 0xff) << 8) + ($addr_in->sin_port >> 8);
+    $pidfd = (uint64)pid * 100000 + (uint64)args->fd;
+    @connect_enter_nsecs[$pidfd]=nsecs;
+    @connect_enter_fd[tid]=args->fd;
+    printf("%ld connect_enter:  pid=%d (%s) pidfd=%ld addr=%s:%d\n", $ts, pid, comm, $pidfd, $addr, $hport);
+}
+
+tracepoint:syscalls:sys_exit_connect {
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)@connect_enter_fd[tid];
+    printf("%ld connect_exit:   pid=%d tid=%d (%s) pidfd=%ld\n", $ts, pid, tid, comm, $pidfd);
+}
+
+tracepoint:syscalls:sys_enter_sendmsg {
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)args->fd;
+    $addr_in = (struct sockaddr_in*)args->msg->msg_name;
+    $addr = ntop($addr_in->sin_addr.s_addr);
+    $hport = (($addr_in->sin_port & 0xff) << 8) + ($addr_in->sin_port >> 8);
+    @sendmsg_enter_nsecs[$pidfd] = nsecs;
+    @sendmsg_enter_fd[tid] = args->fd;
+    printf("%ld sendmsg_enter:  pid=%d (%s) pidfd=%ld addr=%s:%d\n", $ts, pid, comm, $pidfd, $addr, $hport);
+}
+
+tracepoint:syscalls:sys_exit_sendmsg {
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)@sendmsg_enter_fd[tid];
+    printf("%ld sendmsg_exit:   pid=%d tid=%d (%s) pidfd=%ld\n", $ts, pid, tid, comm, $pidfd);
+}
+
+tracepoint:syscalls:sys_enter_sendmmsg {
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)args->fd;
+    @sendmmsg_enter_nsecs[$pidfd] = nsecs;
+    @sendmmsg_enter_fd[tid] = args->fd;
+    printf("%ld sendmmsg_enter: pid=%d (%s) pidfd=%ld\n", $ts, pid, comm, $pidfd);
+}
+
+tracepoint:syscalls:sys_exit_sendmmsg {
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)@sendmmsg_enter_fd[tid];
+    printf("%ld sendmmsg_exit:  pid=%d tid=%d (%s) pidfd=%ld\n", $ts, pid, tid, comm, $pidfd);
+}
+
+tracepoint:syscalls:sys_enter_recvmsg {
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)args->fd;
+    $addr_in = (struct sockaddr_in*)args->msg->msg_name;
+    $addr = ntop($addr_in->sin_addr.s_addr);
+    $hport = (($addr_in->sin_port & 0xff) << 8) + ($addr_in->sin_port >> 8);
+    @recvmsg_enter_nsecs[$pidfd] = nsecs;
+    @recvmsg_enter_fd[tid] = args->fd;
+    printf("%ld recvmsg_enter:  pid=%d (%s) pidfd=%ld addr=%s:%d\n", $ts, pid, comm, $pidfd, $addr, $hport);
+}
+
+tracepoint:syscalls:sys_exit_recvmsg {
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)@recvmsg_enter_fd[tid];
+    printf("%ld recvmsg_exit:   pid=%d tid=%d (%s) pidfd=%ld\n", $ts, pid, tid, comm, $pidfd);
+}
+
+tracepoint:syscalls:sys_enter_recvmmsg {
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)args->fd;
+    @recvmmsg_enter_nsecs[$pidfd] = nsecs;
+    @recvmmsg_enter_fd[tid] = args->fd;
+    printf("%ld recvmmsg_enter:  pid=%d tid=%d (%s) pidfd=%ld\n", $ts, pid, tid, comm, $pidfd);
+}
+
+tracepoint:syscalls:sys_exit_recvmmsg {
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)@recvmmsg_enter_fd[tid];
+    printf("%ld recvmmsg_exit:   pid=%d tid=%d (%s) pidfd=%ld\n", $ts, pid, tid, comm, $pidfd);
+}
+
+tracepoint:syscalls:sys_enter_shutdown {
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)args->fd;
+    printf("%ld shutdown_enter:  pid=%d tid=%d (%s) pidfd=%ld\n", $ts, pid, tid, comm, $pidfd);
+}
+
+tracepoint:syscalls:sys_enter_close /@recvmsg_enter_nsecs[pid * 100000 + args->fd] != 0/
+{
+    $ts = nsecs/1000;
+    $pidfd = (uint64)pid * 100000 + (uint64)args->fd;
+    printf("%ld close_enter:  pid=%d tid=%d (%s) pidfd=%ld\n", $ts, pid, tid, comm, $pidfd);
+}
+
+tracepoint:sched:sched_process_exit /@recvmsg_enter_fd[tid] != 0/ {
+    $ts = nsecs/1000;
+    printf("%ld sched_process_exit pid=%d tid=%d (%s)\n", $ts, pid, tid, comm);
+}

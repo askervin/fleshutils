@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2022 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+
+"""bracketshr - reformat brackets for readability
+
+Usage: bracketshr [options]
+
+Options:
+  -h, --help              print help
+  -b, --brackets BRACKETS reformat brackets in BRACKETS.
+                          Even brackets are opening, odd brackets closing.
+                          The default is '{}[]'.
+  -i, --indent DEPTH      depth of indentation after opening bracket.
+Examples:
+  bracketshr -b '{}[]()<>' -i2
+"""
+
+import getopt
+import sys
+import re
+
+opt_brackets = '{}[]'
+opt_indent = 4
+opt_fmt_before_opening = ''
+opt_fmt_after_opening = '\n'
+opt_fmt_before_closing = '\n'
+opt_fmt_after_closing = '\n'
+opt_fmt_eol = '\n'
+opt_fmt_line_prefix = '%(indent)s'
+opt_hide_whitespace_after_opening = True
+opt_hide_whitespace_after_closing = True
+
+g_command = "bracketshr"
+
+def error(msg, exit_status=1):
+    """print error message and exit"""
+    if msg:
+        sys.stderr.write("%s: %s\n" % (g_command, msg))
+    if exit_status != None:
+        sys.exit(1)
+
+def main():
+    closing_brackets = set()
+    opening_brackets = set()
+    whitespace = ' \t\r'
+
+    for i, b in enumerate(opt_brackets):
+        if i & 1:
+            closing_brackets.add(b)
+        else:
+            opening_brackets.add(b)
+
+    depth = 0
+    def new_fmt_dict(depth):
+        return {'indent': ' ' * (depth * opt_indent)}
+    def fmt(s):
+        return (s % fmt_dict).replace('\n', '\n' + (opt_fmt_line_prefix % fmt_dict))
+    fmt_dict = new_fmt_dict(depth)
+    hide_whitespace = False
+    line = sys.stdin.readline()
+    while line:
+        fmt_dict = {
+            'indent': ' ' * (depth * opt_indent)
+        }
+        new_line = [opt_fmt_line_prefix % fmt_dict]
+        for char in line:
+            if char in opening_brackets:
+                depth += 1
+                fmt_dict = new_fmt_dict(depth)
+                new_line.append(fmt(opt_fmt_before_opening + char + opt_fmt_after_opening))
+                hide_whitespace = opt_hide_whitespace_after_opening
+            elif char in closing_brackets:
+                depth = max(depth-1, 0)
+                fmt_dict = new_fmt_dict(depth)
+                new_line.append(fmt(opt_fmt_before_closing + char + opt_fmt_after_closing))
+                hide_whitespace = opt_hide_whitespace_after_closing
+            else:
+                if hide_whitespace and char in whitespace:
+                    continue
+                hide_whitespace = False
+                new_line.append(fmt(char))
+        sys.stdout.write("".join(new_line))
+        line = sys.stdin.readline()
+
+if __name__ == "__main__":
+    try:
+        opts, remainder = getopt.gnu_getopt(
+            sys.argv[1:],
+            'hb:i:',
+            ['help', 'brackets=', 'indent='])
+    except getopt.GetoptError as e:
+        error(str(e))
+    if remainder:
+        error('unknown parameter(s): %r...' % (remainder[0],))
+
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            error(None, exit_status=0)
+        elif opt in ["-b", "--brackets"]:
+            opt_brackets = arg
+        elif opt in ["-i", "--indent"]:
+            try: int(arg)
+            except: error('invalid indentation %r, integer expected' % (arg,))
+    main()

@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2022 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""numhr - convert all integers to human readable format
+
+Usage: numhr [options]
+
+Options:
+  -h, --help              print help
+  -c, --column COL[,...]  make only COLumns human readable
+  -b NUM                  use the default binary format "%(k1024).NUMf%(Ki)s"
+  -d NUM                  use the default decimal format "%(k1000).NUMf%(k)s"
+  -e NUM                  use the default exponent format "%(k1000).NUMf%(E)s"
+  -f, --format FORMAT     print integers in human readable FORMAT.
+                          The default is "%(k1000).0f%(k)s".
+                          Value is presented as in "k1000" (multiples of 1000)
+                          or "k1024" (multiples of 1024).
+                          Prefix is "k" for decimal prefixes (k, M, G, ...)
+                                   "Ki" for binary (Ki, Mi, Gi, ...)
+                                    "e" for exponent (e3, e6, e9, ...).
+  -i FACTOR               input scaling: multiply input by FACTOR (float).
+  -a, --align <N|L|R>     align formatted numbers in place of original values:
+                            "n" no aligning (the default, shortens lines)
+                            "l" for left
+                            "r" for right (good for tables)
+  -w, --whitespace        convert only whitespace separated numbers.
+                          The default is to convert aggressively numbers
+                          separated by many punctuation characters. Sometimes
+                          this may be undesired, like in "file-2019-09.txt".
+  --force                 always print human readable number. The default is
+                          to print only if it is shorter than the original.
+
+Examples:
+  free | numhr -ar -b0 -i1024
+  ls -l | numhr -ar -d1
+  numhr -e1 < /proc/meminfo
+  du -b mydir/* | sort -n | numhr
+"""
+
+import getopt
+import sys
+import re
+
+opt_columns = set()
+opt_format = "%(k1000).0f%(k)s"
+opt_input_factor = None
+opt_align = "N"
+opt_force = False
+opt_whitespace = False
+
+prefix = {
+    "k": [""] + list("kMGTPEZY"),
+    "Ki": ["", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi", "Yi"],
+    "e": [""] + [str(i) for i in range(1, 64)]
+}
+
+g_command = "hr"
+
+def error(msg, exit_status=1):
+    """print error message and exit"""
+    if msg:
+        sys.stderr.write("%s: %s\n" % (g_command, msg))
+    if exit_status != None:
+        sys.exit(1)
+
+def human_readable_s(value):
+    orig_value = str(value)
+    if not opt_input_factor is None:
+        value *= opt_input_factor
+    k1000 = value
+    k1024 = value
+    k = ""
+    Ki = ""
+    e = ""
+    if k1000 < 0:
+        k1000 = -k1000
+        k1024 = -k1024
+        sign = "-"
+    else:
+        sign = ""
+    divisions = 0
+    while k1000 >= 1000:
+        divisions += 1
+        k1000 = k1000 / 1000.0
+        if divisions < len(prefix["k"]):
+            k = prefix["k"][divisions]
+        else:
+            k = "k" + str(divisions) + "?"
+        e = "e" + str(divisions * 3)
+    divisions = 0
+    while k1024 >= 1024:
+        divisions += 1
+        k1024 = k1024 / 1024.0
+        if divisions < len(prefix["Ki"]):
+            Ki = prefix["Ki"][divisions]
+        else:
+            Ki = "Ki" + str(divisions) + "?"
+    hr_value = (sign + opt_format % {
+        'k1000': k1000,
+        'k1024': k1024,
+        'k': k,
+        'Ki': Ki,
+        'e': e})
+    if len(orig_value) < len(hr_value) and not opt_force:
+        return orig_value
+    else:
+        if opt_align == "R":
+            return (" " * (len(orig_value) - len(hr_value))) + hr_value
+        elif opt_align == "L":
+            return hr_value + (" " * (len(orig_value) - len(hr_value)))
+        else:
+            return hr_value
+
+def main():
+    if opt_whitespace:
+        sep = r'^|$|\s'
+    else:
+        sep = r'^|$|\s|[(){}<>!?%&,:;"\'`=^*/+-]|\[|\]'
+    num = re.compile(
+        r'(?P<presep>' + sep + r')'
+        r'(?P<num>(-)?(([1-9][0-9]*(\.[0-9]+)?)|(0(\.[0-9]+)?)))'
+        r'(?P<postsep>' + sep + r')')
+    line = sys.stdin.readline()
+    while line:
+        new_line = []
+        m = num.search(line)
+        column_index = 0
+        while m:
+            mdict = m.groupdict()
+            new_line.append(line[:m.start()])
+            new_line.append(mdict['presep'])
+            if (not opt_columns or (column_index+1) in opt_columns):
+                try:
+                    hr_num = human_readable_s(int(mdict['num']))
+                except ValueError:
+                    hr_num = human_readable_s(float(mdict['num']))
+                new_line.append(hr_num)
+            else:
+                new_line.append(mdict['num'])
+            new_line.append(mdict['postsep'])
+            line = line[m.end():]
+            m = num.search(line)
+            column_index += 1
+        new_line.append(line)
+        sys.stdout.write("".join(new_line))
+        line = sys.stdin.readline()
+
+if __name__ == "__main__":
+    try:
+        opts, remainder = getopt.gnu_getopt(
+            sys.argv[1:],
+            'hA:a:c:F:f:i:B:b:D:d:E:e:w',
+            ['help', 'align=', 'column=', 'format=', 'force',
+             'whitespace'])
+    except getopt.GetoptError as e:
+        error(str(e))
+    if remainder:
+        error('unknown parameter(s): %r...' % (remainder[0],))
+
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            error(None, exit_status=0)
+        elif opt in ["-a", "-A", "--align"]:
+            opt_align = arg.upper()
+            if not opt_align in "NLR":
+                error('invalid --align %r, expected n, l or r' % (arg,))
+        elif opt in ["-c", "--column"]:
+            try:
+                if "," in arg:
+                    opt_columns = opt_columns.union(int(c) for c in arg.split(','))
+                else:
+                    opt_columns.add(int(arg))
+            except Exception as e:
+                error('invalid --column %r (%s), expected format: int[,int...]' % (arg, e))
+        elif opt in ["-d", "-D"]:
+            try: int(arg)
+            except: error('invalid precision -d %r integer expected' % (arg,))
+            opt_format = "%(k1000)." + arg + "f%(k)s"
+        elif opt in ["-b", "-B"]:
+            try: int(arg)
+            except: error('invalid precision -b %r integer expected' % (arg,))
+            opt_format = "%(k1024)." + arg + "f%(Ki)s"
+        elif opt in ["-e", "-E"]:
+            try: int(arg)
+            except: error('invalid precision -e %r integer expected' % (arg,))
+            opt_format = "%(k1000)." + arg + "f%(e)s"
+        elif opt in ["-f", "-F", "--format"]:
+            opt_format = arg
+        elif opt in ["--force"]:
+            opt_force = True
+        elif opt in ["-i"]:
+            try:
+                opt_input_factor = float(arg)
+            except ValueError:
+                error('invalid input factor -i %r, int/float expected' % (arg,))
+        elif opt in ["-w", "--whitespace"]:
+            opt_whitespace = True
+    main()

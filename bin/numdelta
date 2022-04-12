@@ -1,0 +1,746 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2022 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""numdelta - show delta of numbers compared to history data
+
+Usage: numdelta [options] [INPUTFILE...]
+
+Options:
+  -h, --help                     print help.
+
+  Input handling options:
+
+  -w, --whitespace               match only whitespace separated numbers.
+                                 The default is to match aggressively numbers
+                                 separated by many punctuation characters.
+
+  -C, --continuous INPUTLEN      handle each set of INPUTLEN lines as a
+                                 separate input sequence.
+
+  --filter-colcount COLCOUNT     handle only input lines with COLCOUNT numeric
+                                 columns. Non-matching lines are ignored.
+
+
+  History options for loading/saving data between executions:
+
+  -H, --no-history               run without loading/saving history.
+
+  -N, --new                      clear history data on disk before starting.
+
+  -M, --memory NAME              use memory location NAME to keep unrelated
+                                 numdelta histories separate.
+                                 If NAME contains "/", it defines memory
+                                 path and filename, otherwise the memory
+                                 is located in temp files.
+
+  -k, --keep-old-data            do not update history data on disk. You will
+                                 keep comparing new numbers to originally saved
+                                 ones on next run, too.
+
+  -m, --match t[ext]             compare numbers to history based on text on
+                                 each line. The default is to match by line
+                                 number.
+
+
+  Output formatting options in embedded delta mode: (the default)
+
+  In this mode numdelta will extend or replace input numbers in the output.
+
+  -e, --execute CODE             execute Python CODE before formatting delta.
+                                 CODE can use printable variables (see below)
+                                 and it can define new printable variables.
+
+  -f, --format FORMAT            exact format string, output next to a number:
+                                 the default is
+                                 " (%(sign)s%(abs_delta).0f%(unit)s) "
+                                 printable variables are:
+                                   old, new, delta, abs_delta, unit, sign,
+                                   t, old_t, t_delta,
+                                   min*, max*, avg*, count*, sum*,
+                                   old_min, old_max, old_avg, old_count, old_sum.
+                                 [*] variable is available when running in
+                                     grouped input mode. (See --group-by.)
+
+                                 FORMAT is extended printf-style format string
+                                 with normal variable format:
+                                   %(delta)d
+                                 and extended %((<expr>))<specifier> syntax:
+                                   %(((min+max)/2))d
+
+  -F <delta|stats|VAR>           quick format:
+                                 - "delta" shows difference to previous value
+                                 - "stats" shows count/min/avg/max
+                                 - "interval" shows [min, max]
+                                 - VAR prints the printable variable (see -f)
+
+  -p, --position <after|replace> where to print FORMATted number:
+                                 - after the number in the input (the default)
+                                 - replace original number in the input
+
+  -c, --columns COL[,COL...]     show delta only numbers on given columns.
+
+  -t, --time                     show delta per seconds.
+
+  --show-colcount COLCOUNT       show only lines with matching number column
+                                 count.
+
+  --show-if EXPR                 evaluate Python EXPR. Skip printing whole line
+                                 if EXPR evaluates to False. Numbers in the line
+                                 are still stored in history.
+
+
+  Output formatting in single output row mode:
+
+  In this mode numdelta first reads input data block (either all data,
+  or -C INPUTLEN lines at a time), and then outputs single row
+  formatted as defined with --row-format OUTROWFORMAT.
+
+  -r, --row-format OUTROWFORMAT  format complete output rows instead of
+                                 adding FORMATted string next to each column.
+                                 OUTROWFORMAT has variables
+                                 - f1 (the first number at input filename)
+                                 - l1c2 (number at input line 1, column 2)
+                                 - l1 (list of all numbers on line 1)
+                                 - c1 (list of all numbers at column 1)
+                                 - raw (list of raw line strings)
+                                 - lcount (total number of input lines)
+                                 OUTROWFORMAT is extended printf-style
+                                 format string (see FORMAT).
+
+  -E, --row-execute ROWCODE      execute ROWCODE before printing OUTROWFORMAT.
+                                 ROWCODE can read/write OUTROWFORMAT variables,
+                                 and create new variables.
+
+
+  Output formatting in grouped input mode:
+
+  -g, --group-by GROUP            group input numbers. If GROUP is
+                                  "line" (or "l"), input lines where
+                                  only numbers differ are summarised
+                                  to a single output line.
+                                  If GROUP is "count" (or "c"), all
+                                  input lines containing the same number count
+                                  are summarised to single output line.
+                                  Note that not all printable
+                                  variables are available in grouped
+                                  lines (see FORMAT).
+
+
+  Debug:
+  --debug                        increase debug output
+  --debug-pm                     launch pdb debugger on exception
+
+Examples:
+  # Watch gzip I/O speed (for example, gzip < /dev/zero > /dev/zero &)
+  watch "numdelta -t < /proc/$(pidof gzip)/io | numhr"
+
+  # See changes in VM image filesizes since previous similar numdelta run
+  du -b /vm/*.qcow2 | numdelta -M vms -pr -f '%(old)s + %(delta)s = %(new)s'
+
+  # Calculate and print percentage change on ls -l numeric column 2 (file size):
+  ls -l | numdelta -c 2 -e 'p=(new-old)*100.0/old if old!=0 else 0.0' -f ' (%(p)d%%)'
+
+  # Show min/max/avg load average from proc, keep results in /tmp/mydata.json:
+  watch 'numdelta -M /tmp/mydata.json -Fstats -c1 < /proc/loadavg'
+
+  # Print only lines where column 6 maximum value changes
+  numdelta --show-if 'old_max != max' -C 1 -c 6 -Fstats < mydata.csv
+
+  # Sum up bytes vmalloc'ed by kernel, print with number of allocations (n)
+  awk '{print $2" "$3}' < /proc/vmallocinfo | numdelta -H -C1 -gl -f'%(sum)d (n=%(count)d)' | sort -n
+
+  # See min/max/avg values in /proc/meminfo snapshot files stored like
+  # cat /proc/meminfo > meminfo.$(date +%s)
+  numdelta -H -Fstats meminfo.* | numhr
+
+  # Print the greatest pid returned by pidof PROG (max number on line 1)
+  pidof PROG | numdelta -H -r '%(( max(l1) ))d'
+
+  # Report received and transmitted kilobytes from /proc/net/dev:
+  # sum up columns 1 and 9. Two styles:
+  # 1. Explicit code execution:
+  numdelta -H -E 'rx=sum(c1)/1024; tx=sum(c9)/1024' -r 'rx %(rx)d kB tx %(tx)d kB' < /proc/net/dev
+  # 2. Expression embedded in row format string:
+  numdelta -H -r 'rx %((sum(c1)/1024))d kB tx %((sum(c9)/1024))d kB' < /proc/net/dev
+
+  # Report average CPU MHz (try without -gc to see average on every line)
+  grep "cpu MHz" /proc/cpuinfo | numdelta -H -f" %(avg).1f" -C1 -gc
+
+  # Sum up all IO numbers in /proc/PID/io, print sum and filename
+  numdelta -H /proc/[0-9]*/io -r '%((sum(c1)))s %(fn)s' > io1.txt
+  # Do it again
+  numdelta -H /proc/[0-9]*/io -r '%((sum(c1)))s %(fn)s' > io2.txt
+  # Show files and IO delta in io1.txt and io2.txt
+  numdelta -M ./io.nd -N -mt -w io1.txt
+  numdelta -M ./io.nd -k -mt -w io2.txt -pr -f '%(delta)s %(new)s' --show-if 'delta > 0'
+
+  # Print timestamp and combined system and user time ticks for each process
+  numdelta -H -E 'pid=fn.split("/")[2]; comm=open(fn.replace("stat","comm")).read().strip(); ticks=l1c12+l1c13' -r '%(t)s, %(ticks)s, %(pid)s_%(comm)s' /proc/[0-9]*/stat
+  # ... and list running processes with ticks/s
+  # ... | numdelta -mt -c2 -t --show-if 'delta > 0'
+
+  # Print 5%, median and 95% percentiles of the first number column in data.csv
+  numdelta -H -r '%(( sorted(c1)[int(0.05*len(c1))] ))d, %(( sorted(c1)[len(c1)//2] ))d, %(( sorted(c1)[int(0.95*len(c1))] ))d' data.csv
+"""
+
+import ast
+import getopt
+import getpass
+import json
+import os
+import string
+import sys
+import time
+import re
+
+opt_input_fileobj = sys.stdin
+opt_input_filename = "stdin"
+opt_position = "after"
+opt_preformats = {
+    'delta': " (%(sign)s%(abs_delta).0f%(unit)s)",
+    'interval': " [%(min).0f, %(max).0f]",
+    'stats': " (n=%(count)s, min=%(min).0f, avg=%(avg).0f, max=%(max).0f)"
+}
+for _var in ('last', 'min', 'max', 'avg', 'sum', 'count', 'abs_delta',
+             'old_min', 'old_max', 'old_avg', 'old_sum',
+             't_delta', 't'):
+    opt_preformats[_var] = ' (%s=%%(%s)s)' % (_var, _var)
+
+opt_format = opt_preformats['delta']
+opt_row_format = None
+opt_time = False
+opt_memory = "default"
+opt_columns = set()
+opt_continuous = None
+opt_filter_colcount = None
+opt_no_history = None
+opt_match = None
+opt_keep_old_data = False
+opt_flush = False
+opt_execute = []
+opt_row_execute = []
+opt_show_colcount = set()
+opt_show_if = []
+opt_whitespace = False
+opt_group_by = None
+opt_debug_pm = None
+opt_debug = 0
+
+g_command = "numdelta"
+
+def error(msg, exit_status=1):
+    """print error message and exit"""
+    if msg:
+        sys.stderr.write("%s: %s\n" % (g_command, msg))
+    if exit_status != None:
+        sys.exit(1)
+
+def debug(msg, debug_level):
+    """print debug message"""
+    if msg and debug_level <= opt_debug:
+        sys.stderr.write("debug: %s\n" % (msg,))
+
+def numdelta(input_fileobj, delta_filedata, default_vars):
+    now = time.time()
+    if not 'time_last' in delta_filedata:
+        delta_filedata['time_last'] = now
+    line = input_fileobj.readline()
+    lineno = 0
+    prev_mem_numbers = delta_filedata['mem_numbers']
+    stats = delta_filedata.get('stats', {})
+    new_mem_numbers = {}
+    time_delta = now - delta_filedata['time_last']
+    rowfmt_vars = dict(default_vars)
+    mute_this_line = False
+    while line:
+        ignore_input_line = False
+        lineno += 1
+        new_line = []
+        m = re_num.search(line)
+        if m and (opt_group_by in ["line", "count"] or (not opt_filter_colcount is None) or (opt_match == "text")):
+            # build linetype tuple that contains strings around number columns
+            _linetype_list = []
+            _match_list = []
+            _line = line
+            _mm = re_num.search(_line)
+            postsep = ''
+            while _mm:
+                if opt_match == "text":
+                    _match_list.append((postsep + _line[:_mm.start()] + _mm.groupdict()['presep']).strip())
+                if opt_group_by == "line":
+                    _linetype_list.append((postsep + _line[:_mm.start()] + _mm.groupdict()['presep']).strip())
+                else:
+                    _linetype_list.append("")
+                postsep = _mm.groupdict()['postsep']
+                _line = _line[_mm.end():]
+                _mm = re_num.search(_line)
+            if opt_match == "text":
+                _match_list.append((postsep + _line).strip())
+            if opt_group_by == "line":
+                _linetype_list.append((postsep + _line).strip())
+            else:
+                _linetype_list.append("")
+            linetype = repr(tuple(_linetype_list))
+            if not opt_filter_colcount is None:
+                if len(_linetype_list) - 1 != opt_filter_colcount:
+                    ignore_input_line = True
+        if not m and (not opt_filter_colcount is None and opt_filter_colcount > 0):
+            ignore_input_line = True
+        if ignore_input_line:
+            # this line has non-matching number of columns, skip whole line
+            lineno -= 1
+            line = input_fileobj.readline()
+            continue
+        column_index = 0
+        mute_this_line = False
+        while m:
+            mdict = m.groupdict()
+            new_line.append(line[:m.start()])
+            new_line.append(mdict['presep'])
+            orig_number = mdict['num']
+            try:
+                number = int(mdict['num'])
+                num_format = opt_format
+            except ValueError:
+                number = float(mdict['num'])
+                num_format = opt_format.replace('.0f', '.4f')
+            if opt_match == "text":
+                lineno_s = repr(tuple(_match_list))
+            elif opt_group_by in ["line", "count"]:
+                lineno_s = linetype
+            else:
+                lineno_s = str(lineno)
+            column_index_s = str(column_index)
+            if not lineno_s in new_mem_numbers:
+                new_mem_numbers[lineno_s] = {}
+            new_mem_numbers[lineno_s][column_index_s] = {
+                'last': number,
+                'min': number,
+                'max': number,
+                'avg': number,
+                'sum': number,
+                'count': 1
+            }
+            if (# there is previous data on the same line
+                    lineno_s in prev_mem_numbers
+                and
+                    # this column exists in the previous data
+                    column_index_s in prev_mem_numbers[lineno_s]
+                and
+                    # user has not defined columns or has included this column
+                    (not opt_columns or (column_index+1) in opt_columns)):
+                # add delta on the line on this column
+                old = prev_mem_numbers[lineno_s][column_index_s]['last']
+                new = new_mem_numbers[lineno_s][column_index_s]['last']
+                delta = new - old
+                delta_unit = ""
+                if opt_time and time_delta != 0:
+                    delta = delta / time_delta
+                    delta_unit = "/s"
+                old_min = prev_mem_numbers[lineno_s][column_index_s]['min']
+                old_max = prev_mem_numbers[lineno_s][column_index_s]['max']
+                old_avg = prev_mem_numbers[lineno_s][column_index_s]['avg']
+                old_count = prev_mem_numbers[lineno_s][column_index_s]['count']
+                old_sum = prev_mem_numbers[lineno_s][column_index_s]['sum']
+                new_mem_numbers[lineno_s][column_index_s]['min'] = min(old_min, new)
+                new_mem_numbers[lineno_s][column_index_s]['max'] = max(old_max, new)
+                new_mem_numbers[lineno_s][column_index_s]['avg'] = (old_sum + new) / (old_count + 1)
+                new_mem_numbers[lineno_s][column_index_s]['sum'] = old_sum + new
+                new_mem_numbers[lineno_s][column_index_s]['count'] = old_count + 1
+                fmt_vars = {'delta': delta,
+                            'abs_delta': abs(delta),
+                            't_delta': time_delta,
+                            't': now,
+                            'old_t': delta_filedata['time_last'],
+                            'unit': delta_unit,
+                            'old': old,
+                            'new': new,
+                            'old_min': old_min,
+                            'old_max': old_max,
+                            'old_avg': old_avg,
+                            'old_sum': old_sum,
+                            'old_count': old_count,
+                            'sign': '-' if delta < 0 else '+'}
+                fmt_vars.update(new_mem_numbers[lineno_s][column_index_s])
+                fmt_vars.update(default_vars)
+                for code in opt_execute:
+                    exec(code, fmt_vars)
+                formatted_delta = num_format % fmt_vars
+                if r'\n' in formatted_delta:
+                    formatted_delta = formatted_delta.replace(r'\n', '\n')
+                if opt_position == "after":
+                    new_line.append(orig_number)
+                    new_line.append(formatted_delta)
+                elif opt_position == "replace":
+                    new_line.append(formatted_delta)
+            else:
+                # there is no previous data on this line
+                new_line.append(orig_number)
+                fmt_vars = {
+                    'new': new_mem_numbers[lineno_s][column_index_s]['last'],
+                    't': now,
+                }
+                fmt_vars.update(new_mem_numbers[lineno_s][column_index_s])
+                fmt_vars.update(default_vars)
+            if (not opt_columns or (column_index+1) in opt_columns) and opt_row_format is None:
+                for expr in opt_show_if:
+                    try:
+                        if not eval(expr, fmt_vars):
+                            mute_this_line = True
+                    except NameError as e:
+                        if opt_debug_pm:
+                            raise
+                        debug('variable %s in --show-if %r, use --debug-pm to debug' % (e, expr), 2)
+                        mute_this_line = True
+            if not opt_row_format is None:
+                rowformat_lc_prefix='l%sc%s' % (lineno, column_index+1)
+                rowformat_l_prefix='l%s' % (lineno,)
+                rowformat_c_prefix='c%s' % (column_index+1,)
+                rowformat_raw_prefix='raw'
+                rowfmt_vars[rowformat_lc_prefix] = number
+                if not rowformat_l_prefix in rowfmt_vars:
+                    rowfmt_vars[rowformat_l_prefix] = []
+                rowfmt_vars[rowformat_l_prefix].append(number)
+                if not rowformat_raw_prefix in rowfmt_vars:
+                    rowfmt_vars[rowformat_raw_prefix] = []
+                rowfmt_vars[rowformat_raw_prefix].append(line)
+                if not rowformat_c_prefix in rowfmt_vars:
+                    rowfmt_vars[rowformat_c_prefix] = []
+                rowfmt_vars[rowformat_c_prefix].append(number)
+                for var in new_mem_numbers[lineno_s][column_index_s]:
+                    rowfmt_vars[rowformat_lc_prefix + var] = new_mem_numbers[lineno_s][column_index_s][var]
+                for var in fmt_vars:
+                    if var == 't' or var in default_vars:
+                        continue
+                    rowfmt_vars[rowformat_lc_prefix + var] = fmt_vars[var]
+                rowfmt_vars['t'] = now
+                rowfmt_vars.update(default_vars)
+            new_line.append(mdict['postsep'])
+            line = line[m.end():]
+            column_index += 1
+            m = re_num.search(line)
+        new_line.append(line)
+        if (not mute_this_line
+            and opt_group_by is None
+            and (not opt_show_colcount or column_index in opt_show_colcount)):
+            if opt_row_format is None:
+                sys.stdout.write("".join(new_line))
+        if (not opt_continuous is None) and (lineno >= opt_continuous):
+            break
+        line = input_fileobj.readline()
+    if ((not opt_row_format is None)
+        and rowfmt_vars
+        and (not opt_show_colcount or column_index in opt_show_colcount)):
+        rowfmt_vars['lcount'] = lineno
+        for code in opt_row_execute:
+            try:
+                exec(code, rowfmt_vars)
+            except NameError as e:
+                if opt_debug_pm:
+                    raise
+                debug('cannot execute %r in --row-format %r, use --debug-pm to debug more' % (code, opt_row_format), 1)
+        if not mute_this_line and opt_show_if:
+            for expr in opt_show_if:
+                try:
+                    if not eval(expr, rowfmt_vars):
+                        mute_this_line = True
+                except NameError as e:
+                    if opt_debug_pm:
+                        raise
+                    debug('variable %s in --show-if %r, use --debug-pm to debug' % (e, expr), 2)
+                    mute_this_line = True
+        out_row = None
+        if not mute_this_line:
+            try:
+                out_row = (opt_row_format % rowfmt_vars)
+            except KeyError as e:
+                if opt_debug_pm:
+                    raise
+                debug('cannot print variable %r in --row-format %r, use --debug-pm to debug more' % (e.args[0], opt_row_format), 1)
+        if out_row:
+            sys.stdout.write(out_row + "\n")
+    delta_filedata['mem_numbers'].update(new_mem_numbers)
+    delta_filedata['time_last'] = now
+    if not line:
+        return False # no more input to read
+    else:
+        return True # there is more input to read (running in --continuous mode)
+
+def main(input_filenames):
+    global re_num
+    # regexp for parsing numbers from input data
+    if opt_whitespace:
+        sep = r'^|$|\s'
+    else:
+        sep = r'^|$|\s|[(){}<>!?%&,:;"\'`=^*/+-]|\[|\]'
+    re_num = re.compile(
+        r'(?P<presep>' + sep + r')'
+        r'(?P<num>(-)?(([1-9][0-9]*(\.[0-9]+)?)|(0(\.[0-9]+)?)))'
+        r'(?P<postsep>' + sep + r')')
+    # more aggressive regexp for parsing numbers from input file names
+    fnum_sep = r'^|$|[^0-9]'
+    re_fnum = re.compile(
+        r'(?P<presep>' + fnum_sep + r')'
+        r'(?P<num>(-)?(([1-9][0-9]*(\.[0-9]+)?)|(0(\.[0-9]+)?)))'
+        r'(?P<postsep>' + fnum_sep + r')')
+
+    # load history
+    empty_history = {'filename': '',
+                     'time_start': time.time(),
+                     'mem_numbers': {}}
+    if opt_no_history:
+        delta_filedata = empty_history
+    else:
+        tempdir = "/tmp/numdelta-%s" % (getpass.getuser(),)
+        if opt_memory and not "/" in opt_memory:
+            tempdir += "/" + opt_memory
+            try:
+                os.makedirs(tempdir)
+            except:
+                pass
+            delta_filename = tempdir + "/" + opt_input_filename.replace('/', '__')
+        elif "/" in opt_memory:
+            delta_filename = opt_memory
+        else:
+            error('bad --memory NAME %r' % (opt_memory,))
+        if opt_flush:
+            try:
+                os.remove(delta_filename)
+            except:
+                pass
+        try:
+            delta_filedata = json.load(open(delta_filename))
+        except:
+            delta_filedata = empty_history
+        delta_filedata['filename'] = delta_filename
+
+    # handle input file(s) with history
+    for input_filename in input_filenames:
+        # parse numbers from input_filename and pass them to numdelta
+        # variables f1, f2, ...
+        _line = input_filename
+        m = re_fnum.search(_line)
+        fname_vars = {}
+        while m:
+            try:
+                fname_vars['f' + str(len(fname_vars)+1)] = int(m.groupdict()['num'])
+            except ValueError:
+                try:
+                    fname_vars['f' + str(len(fname_vars)+1)] = float(m.groupdict()['num'])
+                except ValueError:
+                    pass
+            _line = _line[m.end():]
+            m = re_fnum.search(_line)
+        fname_vars['fn'] = input_filename
+        if input_filename in ["-", "stdin"]:
+            input_fileobj = sys.stdin
+        else:
+            try:
+                input_fileobj = open(input_filename)
+            except IOError as e:
+                error('cannot open input file %r: %s' % (input_filename, e))
+        while numdelta(input_fileobj, delta_filedata, fname_vars):
+            pass
+
+        # if data has been grouped by lines, print groupped output
+        if opt_group_by:
+            for linetype_tuple_s in sorted(delta_filedata['mem_numbers'].keys()):
+                line = []
+                linetype_tuple = ast.literal_eval(linetype_tuple_s)
+                column_count = len(linetype_tuple) - 1
+                if opt_show_colcount and not column_count in opt_show_colcount:
+                    continue
+                num_columns = delta_filedata['mem_numbers'][linetype_tuple_s]
+                mute_this_line = False
+                for column_index in range(column_count):
+                    line.append(linetype_tuple[column_index].strip())
+                    fmt_vars = num_columns[str(column_index)]
+                    fmt_vars.update(fname_vars)
+                    for code in opt_execute:
+                        exec(code, fmt_vars)
+                    for expr in opt_show_if:
+                        if not eval(expr, fmt_vars):
+                            mute_this_line = True
+                    if (not opt_columns or (column_index+1) in opt_columns):
+                        line.append((opt_format % fmt_vars).strip())
+                    else:
+                        if fmt_vars['min'] == fmt_vars['max']:
+                            line.append(str(fmt_vars['min']))
+                        else:
+                            line.append('NUM')
+                line.append((linetype_tuple[-1]).strip())
+                if not mute_this_line:
+                    sys.stdout.write(" ".join(line).strip() + "\n")
+
+    # save history
+    if not opt_keep_old_data and not opt_no_history:
+        open(delta_filename, "w").write(json.dumps(delta_filedata))
+
+def nomatch_match(re_pattern, s):
+    """iterate (non_matching_prefix_of_s, groupdict/None) of regexp in s"""
+    _s = s
+    m = re_pattern.search(_s)
+    while m:
+        yield _s[:m.start()], m.groupdict()
+        _s = _s[m.end():]
+        m = re_pattern.search(_s)
+    yield _s, None
+
+def parse_code_format(fmt):
+    """returns (list_of_exec, no_code_fmt)"""
+    list_of_exec = []
+    no_code_fmt = []
+    r = re.compile(r'%\(\((?P<expr>.*?)\)\)(?P<specifier>([0-9]*\.?[0-9]*)[diouxXeEfFgGcrsa])')
+    for index, (before, d) in enumerate(nomatch_match(r, fmt)):
+        no_code_fmt.append(before)
+        if d is None:
+            break
+        var_name = "__exc_fmt_%d__" % (index,)
+        list_of_exec.append(var_name + "=" + d['expr'])
+        no_code_fmt.append("%(" + var_name + ")" + d['specifier'])
+    return list_of_exec, "".join(no_code_fmt)
+
+if __name__ == "__main__":
+    opt_execute_for_format = []
+    opt_row_execute_for_format = []
+    try:
+        opts, remainder = getopt.gnu_getopt(
+            sys.argv[1:],
+            'C:g:he:E:f:F:Hr:p:tm:n:M:c:kNw',
+            ['help',
+             'execute=', 'format=',
+             'row-execute=', 'row-format=',
+             'position=', 'time',
+             'name=', 'memory=', 'column=', 'continuous=', 'filter-colcount=',
+             'show-colcount=', 'show-if=',
+             'group-by=', 'match=',
+             'no-history', 'flush', 'new', 'keep-old-data',
+             'debug', 'debug-pm'])
+    except getopt.GetoptError as e:
+        error(str(e))
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            error(None, exit_status=0)
+        elif opt in ["-f", "--format"]:
+            exc, fmt = parse_code_format(arg)
+            opt_format = fmt
+            opt_execute_for_format.extend(exc)
+        elif opt in ["-F"]:
+            if not arg in opt_preformats:
+                error('invalid preformat -F %r, valid: %s' % (
+                    arg, ', '.join(sorted(opt_preformats.keys()))))
+            opt_format = opt_preformats[arg]
+        elif opt in ["-r", "--row-format"]:
+            exc, fmt = parse_code_format(arg)
+            opt_row_execute_for_format.extend(exc)
+            opt_row_format = fmt
+        elif opt in ["-p", "--position"]:
+            if arg.lower() in ["a", "after"]:
+                opt_position = "after"
+            elif arg.lower() in ["r", "replace"]:
+                opt_position = "replace"
+            else:
+                error("invalid printing position %r, valid: 'after', 'replace'" % (arg,))
+        elif opt in ["-t", "--time"]:
+            opt_time = True
+        elif opt in ["-n", "--name", "-M", "--memory"]:
+            opt_memory = arg
+        elif opt in ["-c", "--column"]:
+            try:
+                if "," in arg:
+                    opt_columns = opt_columns.union(int(c) for c in arg.split(','))
+                else:
+                    opt_columns.add(int(arg))
+            except Exception as e:
+                error('invalid --column %r (%s), expected format: int[,int...]' % (arg, e))
+        elif opt in ["-C", "--continuous"]:
+            try:
+                opt_continuous = int(arg)
+            except Exception as e:
+                error('invalid --continuous INPUTLEN %r, integer expected' % (arg,))
+        elif opt in ["--filter-colcount"]:
+            try:
+                opt_filter_colcount = int(arg)
+            except Exception as e:
+                error('invalid --filter-colcount COLCOUNT %r, integer expected' % (arg,))
+        elif opt in ["-g", "--group-by"]:
+            if arg in ["l", "line"]:
+                opt_group_by = "line"
+            elif arg in ["c", "count"]:
+                opt_group_by = "count"
+            else:
+                error('invalid --groub-by %r, supported: line, count' % (arg,))
+        elif opt in ["-m", "--match"]:
+            if arg in ["t", "text"]:
+                opt_match = "text"
+            else:
+                error('invalid --match %r, supported: text' % (arg,))
+        elif opt in ["--flush", "-N", "--new"]:
+            opt_flush = True
+        elif opt in ["-H", "--no-history"]:
+            opt_no_history = True
+        elif opt in ["-k", "--keep-old-data"]:
+            opt_keep_old_data = True
+        elif opt in ["-e", "--execute"]:
+            opt_execute.append(arg)
+        elif opt in ["-E", "--row-execute"]:
+            opt_row_execute.append(arg)
+        elif opt in ["--show-colcount"]:
+            try:
+                opt_show_colcount.add(int(arg))
+            except ValueError:
+                error('invalid --show-colcount %r, integer >= 0 expected' % (arg,))
+        elif opt in ["--show-if"]:
+            opt_show_if.append(arg)
+        elif opt in ["-w", "--whitespace"]:
+            opt_whitespace = True
+        elif opt in ["--debug"]:
+            opt_debug += 1
+        elif opt in ["--debug-pm"]:
+            opt_debug_pm = True
+    opt_execute.extend(opt_execute_for_format)
+    opt_row_execute.extend(opt_row_execute_for_format)
+    if not remainder:
+        input_filenames = ["-"] # input from stdin
+    else:
+        input_filenames = remainder
+    try:
+        main(input_filenames)
+    except Exception as e:
+        if opt_debug_pm:
+            import traceback
+            tb_lines = traceback.format_exc().splitlines()
+            max_linelen = max([len(l) for l in tb_lines])
+            debug("=" * max_linelen, 0)
+            for line in tb_lines:
+                debug(line, 0)
+            debug("=" * max_linelen, 0)
+            debug("Entering post-mortem debugger", 0)
+            import pdb
+            pdb.post_mortem()
+        else:
+            error('error: %s (%s), run with --debug-pm for more information' % (e, type(e).__name__))
