@@ -104,7 +104,7 @@ def outerr(cmd, str_stdin=""):
         output("DEBUG: launch %r\n" % (cmd,))
     try:
         p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except e:
+    except Exception as e:
         if opt_debug:
             output("DEBUG: run exeption: %s" % (e,))
         return "", "cannot run " + str(cmd)+ ": " + str(e)
@@ -180,7 +180,7 @@ def goguru_definition(show_src=False):
                 all_lines = open(srcfile).readlines()
                 invlines = all_lines[:int(lineno)][::-1]
                 srclines_and_more = all_lines[int(lineno):]
-            except e:
+            except Exception as e:
                 output("could not open source file %r from guru line %r\n" % (srcfile, l))
             invdoc = []
             for n, l in enumerate(invlines):
@@ -297,7 +297,7 @@ def main():
             if cmd[2:].strip():
                 try:
                     open(cmd[2:].strip(),"w").write(open(opt_output).read())
-                except e:
+                except Exception as e:
                     output("save to %r failed: %s" % (cmd[2:].strip(), e))
             else:
                  output("Usage: s SAVEFILE\n")
@@ -306,7 +306,7 @@ def main():
             if filename:
                 try:
                     open(filename,"w").write(repr(usergos))
-                except e:
+                except Exception as e:
                     output("save to %r failed: %s" % (filename, e))
             else:
                  output("Usage: sigo SAVEFILE.igo\n")
@@ -315,7 +315,7 @@ def main():
             if filename:
                 try:
                     usergos = eval(open(filename).read())
-                except e:
+                except Exception as e:
                     output("save to %r failed: %s" % (filename, e))
             else:
                  output("Usage: ligo LOADFILE.igo\n")
