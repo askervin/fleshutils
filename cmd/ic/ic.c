@@ -73,7 +73,7 @@ void* compile_load_f(char* fpath) {
 
 void add_include(char* s) {
     add_f("include.h", s);
-    systemf("echo -n '' > %s/includes.h; for f in %s/*include.h; do echo \"#include \\\"$f\\\"\" >> %s/includes.h; done", ic_workdir, ic_workdir, ic_workdir);
+    systemf("( echo '#ifndef __IC_INCLUDES_H'; echo '#define __IC_INCLUDES_H'; ) > %s/includes.h; for f in %s/*include.h; do echo \"#include \\\"$f\\\"\" >> %s/includes.h; done; echo '#endif' >> %s/includes.h", ic_workdir, ic_workdir, ic_workdir, ic_workdir);
 }
 
 void add_type(char* s) {
@@ -84,8 +84,9 @@ void add_type(char* s) {
 void add_var(char* s) {
     char *code = (char *)malloc(strlen(s) + MAXPATH + 1024);
     sprintf(code,
+            "#include  \"%s/includes.h\"\n"
             "#include  \"%s/types.h\"\n"
-            "%s", ic_workdir, s);
+            "%s", ic_workdir, ic_workdir, s);
     add_f("var.c", code);
     void  *handle = compile_load_f(_last_fpath);
     if (handle == NULL) {
@@ -97,8 +98,9 @@ void add_var(char* s) {
     /* Variable is now loaded in memory. Make it accessible to user
      * code via new include. */
     sprintf(code,
+            "#include  \"%s/includes.h\"\n"
             "#include  \"%s/types.h\"\n"
-            "extern %s", ic_workdir, s);
+            "extern %s", ic_workdir, ic_workdir, s);
     add_f("var.h", code);
     free(code);
     systemf("echo -n '' > %s/vars.h; for f in %s/*var.h; do echo \"#include \\\"$f\\\"\" >> %s/vars.h; done", ic_workdir, ic_workdir, ic_workdir);
