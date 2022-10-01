@@ -34,13 +34,26 @@ SOFTWARE.
 #define MAXCMD 65535
 #define MAXPATH 65535
 
-char *ic_workdir = NULL;
+const char *ic_cc = NULL;
+const char *ic_cc_default = "cc";
+const char *ic_cflags = NULL;
+const char *ic_cflags_default = "";
+const char *ic_ldflags = NULL;
+const char *ic_ldflags_default = "";
+const char *ic_debug = NULL;
+const char *ic_debug_default = NULL;
+const char *ic_workdir = NULL;
+FILE* ic_outfile = NULL;
 
 const char* interactive_help = (
     "Interactive C prompt-of-concept\n"
     "\n"
     "Environment variables:\n"
     "  IC_ECHO            if set, echo commands to output\n"
+    "  IC_DEBUG           if set, print compiler commands\n"
+    "  IC_CC              C compiler, the default is \"cc\"\n"
+    "  IC_CFLAGS          C compiler flags\n"
+    "  IC_LDFLAGS         linker flags\n"
     "  IC_WORKDIR         existing directory for temporary files\n"
     "\n"
     "Commands:\n"
@@ -64,6 +77,17 @@ int _last_f = 0;
 char _last_fpath[MAXPATH];
 char _last_cmd[MAXCMD];
 
+void out(const char* fmt, ...) {
+    if (ic_outfile == NULL) {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(ic_outfile, fmt, args);
+    va_end(args);
+    fflush(ic_outfile);
+}
+
 int add_f(const char* fname, char* s) {
     char *fpath = _last_fpath;
     _last_f += 1;
@@ -83,6 +107,9 @@ int systemf(const char* fmt, ...) {
   va_start(args, fmt);
   vsprintf(_last_cmd, fmt, args);
   va_end(args);
+  if (ic_debug != NULL) {
+      out("%s\n", _last_cmd);
+  }
   return system(_last_cmd);
 }
 
@@ -91,7 +118,7 @@ void* compile_load_f(char* fpath) {
     systemf("touch %s/includes.h %s/types.h %s/vars.h", ic_workdir, ic_workdir, ic_workdir);
     strcat(fpathso, fpath);
     strcat(fpathso, ".so");
-    systemf("gcc -O0 -g -fPIC -shared -rdynamic -o %s %s", fpathso, fpath);
+    systemf("%s -O0 -g -fPIC %s -shared -rdynamic %s -o %s %s", ic_cc, ic_cflags, ic_ldflags, fpathso, fpath);
     void* handle = dlopen(fpathso, RTLD_NOW|RTLD_GLOBAL);
     dlerror();
     return handle;
@@ -154,18 +181,7 @@ void run(char* s) {
     dlclose(handle);
 }
 
-void print(FILE* output, const char* fmt, ...) {
-    if (output == NULL) {
-        return;
-    }
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(output, fmt, args);
-    va_end(args);
-    fflush(output);
-}
-
-int interactive(FILE* input, FILE* output) {
+int interactive(FILE* input) {
     char *cmdbuf = NULL;
     size_t cmdlen;
     int n = 1;
@@ -176,19 +192,19 @@ int interactive(FILE* input, FILE* output) {
             free(cmdbuf);
             cmdbuf = NULL;
         }
-        print(output, "ic> ");
+        out("ic> ");
         n = getline(&cmdbuf, &cmdlen, input);
         if (n <= 0 || cmdbuf == NULL) {
             break;
         }
         if (opt_echo) {
-            print(output, "%s", cmdbuf);
+            out("%s", cmdbuf);
         }
         if (strlen(cmdbuf) == 0) {
             continue;
         }
         if (strncmp(cmdbuf, "help", 4) == 0) {
-            print(output, "%s", interactive_help);
+            out("%s", interactive_help);
             continue;
         }
         if (strncmp(cmdbuf, "#", 1) == 0) {
@@ -218,6 +234,19 @@ int interactive(FILE* input, FILE* output) {
 
 int main(int argc, char** argv)
 {
+    ic_outfile = stdout;
+    if (NULL == (ic_cc = getenv("IC_CC"))) {
+        ic_cc = ic_cc_default;
+    }
+    if (NULL == (ic_cflags = getenv("IC_CFLAGS"))) {
+        ic_cflags = ic_cflags_default;
+    }
+    if (NULL == (ic_ldflags = getenv("IC_LDFLAGS"))) {
+        ic_ldflags = ic_ldflags_default;
+    }
+    if (NULL == (ic_debug = getenv("IC_DEBUG"))) {
+        ic_debug = ic_debug_default;
+    }
     ic_workdir = getenv("IC_WORKDIR");
     if (ic_workdir == NULL) {
         char template[128] = "/tmp/ic.XXXXXX";
@@ -228,14 +257,14 @@ int main(int argc, char** argv)
         }
     }
     if (argc == 1) {
-        interactive(stdin, stdout);
+        interactive(stdin);
     } else {
         FILE *input = fopen(argv[1], "r");
         if (input == NULL) {
             perror("cannot open input file");
             exit(1);
         }
-        interactive(input, stdout);
+        interactive(input);
     }
     return 0;
 }
