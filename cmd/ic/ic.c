@@ -30,13 +30,15 @@ SOFTWARE.
 #include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 
 #define MAXCMD 65535
 #define MAXPATH 65535
+#define MAXCODE (1024*1024)
 
 const char *ic_cc = NULL;
 const char *ic_cc_default = "cc";
-const char *ic_cflags = NULL;
+const char *ic_cflags = "-g -O0";
 const char *ic_cflags_default = "";
 const char *ic_ldflags = NULL;
 const char *ic_ldflags_default = "";
@@ -73,9 +75,11 @@ const char* interactive_help = (
     "\n"
     );
 
-int _last_f = 0;
+int  _last_f = 0;
 char _last_fpath[MAXPATH];
 char _last_cmd[MAXCMD];
+char _code[MAXCODE];
+int  _last_errno = 0;
 
 void out(const char* fmt, ...) {
     if (ic_outfile == NULL) {
@@ -118,7 +122,7 @@ void* compile_load_f(char* fpath) {
     systemf("touch %s/includes.h %s/types.h %s/vars.h", ic_workdir, ic_workdir, ic_workdir);
     strcat(fpathso, fpath);
     strcat(fpathso, ".so");
-    systemf("%s -O0 -g -fPIC %s -shared -rdynamic %s -o %s %s", ic_cc, ic_cflags, ic_ldflags, fpathso, fpath);
+    systemf("%s -fPIC %s -shared -rdynamic %s -o %s %s", ic_cc, ic_cflags, ic_ldflags, fpathso, fpath);
     void* handle = dlopen(fpathso, RTLD_NOW|RTLD_GLOBAL);
     dlerror();
     return handle;
@@ -127,58 +131,59 @@ void* compile_load_f(char* fpath) {
 void add_include(char* s) {
     add_f("include.h", s);
     systemf("( echo '#ifndef __IC_INCLUDES_H'; echo '#define __IC_INCLUDES_H'; ) > %s/includes.h; for f in %s/*include.h; do echo \"#include \\\"$f\\\"\" >> %s/includes.h; done; echo '#endif' >> %s/includes.h", ic_workdir, ic_workdir, ic_workdir, ic_workdir);
+    /* TODO: test that include compiles, otherwise delete it. */
 }
 
 void add_type(char* s) {
     add_f("type.h", s);
     systemf("( echo '#ifndef __IC_TYPES_H'; echo '#define __IC_TYPES_H'; ) > %s/types.h; for f in %s/*type.h; do echo \"#include \\\"$f\\\"\" >> %s/types.h; done; echo '#endif' >> %s/types.h", ic_workdir, ic_workdir, ic_workdir, ic_workdir);
+    /* TODO: test that type compiles, otherwise delete it. */
 }
 
 void add_var(char* s) {
-    char *code = (char *)malloc(strlen(s) + MAXPATH + 1024);
-    sprintf(code,
+    sprintf(_code,
             "#include  \"%s/includes.h\"\n"
             "#include  \"%s/types.h\"\n"
             "%s", ic_workdir, ic_workdir, s);
-    add_f("var.c", code);
+    add_f("var.c", _code);
     void  *handle = compile_load_f(_last_fpath);
     if (handle == NULL) {
         /* Bad variable declaration. Do not create a header for this. */
         unlink(_last_fpath);
-        free(code);
         return;
     }
     /* Variable is now loaded in memory. Make it accessible to user
      * code via new include. */
-    sprintf(code,
+    sprintf(_code,
             "#include  \"%s/includes.h\"\n"
             "#include  \"%s/types.h\"\n"
             "extern %s", ic_workdir, ic_workdir, s);
-    add_f("var.h", code);
-    free(code);
+    add_f("var.h", _code);
     systemf("echo -n '' > %s/vars.h; for f in %s/*var.h; do echo \"#include \\\"$f\\\"\" >> %s/vars.h; done", ic_workdir, ic_workdir, ic_workdir);
 }
 
 void run(char* s) {
-    char code[65536] = "";
-    sprintf(code,
+    int runline_id = _last_f + 1;
+    sprintf(_code,
             "#include \"%s/includes.h\"\n"
             "#include \"%s/vars.h\"\n"
-            "void runline(void){\n"
+            "void runline%d(void){\n"
             "%s"
             "}",
-            ic_workdir, ic_workdir, s);
-    add_f("run.c", code);
+            ic_workdir, ic_workdir, runline_id, s);
+    add_f("run.c", _code);
     void* handle = compile_load_f(_last_fpath);
     if (handle == NULL) {
         return;
     }
-    void (*runline)(void) = dlsym(handle, "runline");
+    sprintf(_code, "runline%d", runline_id);
+    void (*runline)(void) = dlsym(handle, _code);
     if (runline == NULL) {
         return;
     }
+    errno = _last_errno;
     runline();
-    dlclose(handle);
+    _last_errno = errno;
 }
 
 int interactive(FILE* input) {
