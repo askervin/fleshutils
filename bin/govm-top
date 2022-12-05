@@ -1,0 +1,11 @@
+#!/bin/bash
+
+CGTOP=$(systemd-cgtop -c -b -n 2 -P | awk '/docker-/{if ($3 > 0) print $3" "$4" "$1}')
+linefmt="%-10s %5s %8s %12s %s\n"
+printf "$linefmt" "ID" "%CPU" "Memory" "IP" "Name"
+
+govm ls | while read govmid govmname govmnamespace govmip; do
+    govmcpu=$(awk "/$govmid/{print \$1}" <<< "$CGTOP")
+    govmmem=$(awk "/$govmid/{print \$2}" <<< "$CGTOP")
+    [ -n "$govmcpu" ] && printf "$linefmt" "$govmid" "$govmcpu" "$govmmem" "$govmip" "$govmname"
+done
