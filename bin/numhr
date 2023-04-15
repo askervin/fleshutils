@@ -36,8 +36,8 @@ Options:
   -e NUM                  use the default exponent format "%(k1000).NUMf%(E)s"
   -f, --format FORMAT     print integers in human readable FORMAT.
                           The default is "%(k1000).0f%(k)s".
-                          Value is presented as in "k1000" (multiples of 1000)
-                          or "k1024" (multiples of 1024).
+                          Value is presented as in "k1000" (multiples of 1000),
+                          "k1024" (multiples of 1024) or "v" (original value).
                           Prefix is "k" for decimal prefixes (k, M, G, ...)
                                    "Ki" for binary (Ki, Mi, Gi, ...)
                                     "e" for exponent (e3, e6, e9, ...).
@@ -119,6 +119,7 @@ def human_readable_s(value):
         else:
             Ki = "Ki" + str(divisions) + "?"
     hr_value = (sign + opt_format % {
+        'value': value,
         'k1000': k1000,
         'k1024': k1024,
         'k': k,
