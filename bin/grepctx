@@ -113,7 +113,7 @@ def _grep_lines(line_iter):
         if len(line) < 2: # empty line: only linefeed
             continue
         indentation_level = len(line) - len(line.lstrip())
-        if indentation_level <= min_visible_level:
+        if indentation_level < min_visible_level:
             max_visible_level = -1
             min_visible_level = -1
         if indentation_level >= max_level:
