@@ -24,13 +24,14 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+#include <ctype.h>
+#include <dlfcn.h>
+#include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <dlfcn.h>
-#include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
-#include <errno.h>
 
 #define MAXCMD 65535
 #define MAXPATH 65535
@@ -64,6 +65,7 @@ const char* interactive_help = (
     "  #INCLUDE           include a header.\n"
     "  t: TYPE-DECL       define a type.\n"
     "  v: VAR-DECL        compile and load a variable.\n"
+    "  x: SHORTHAND       expand SHORTHAND\n"
     "  CODE               compile and run CODE.\n"
     "\n"
     "Example:\n"
@@ -81,6 +83,99 @@ char _last_cmd[MAXCMD];
 char _code[MAXCODE];
 int  _last_errno = 0;
 
+typedef struct {
+    const char* shorthand;
+    const char *description;
+    char* expanded;
+} macro_t;
+
+macro_t macros[2] = {
+    { .shorthand = "iposix",
+      .description = "include posix headers",
+      .expanded =
+      "#include <aio.h>\n"
+      "#include <arpa/inet.h>\n"
+      "#include <assert.h>\n"
+      "#include <complex.h>\n"
+      "#include <cpio.h>\n"
+      "#include <ctype.h>\n"
+      "#include <dirent.h>\n"
+      "#include <dlfcn.h>\n"
+      "#include <errno.h>\n"
+      "#include <fcntl.h>\n"
+      "#include <fenv.h>\n"
+      "#include <float.h>\n"
+      "#include <fmtmsg.h>\n"
+      "#include <fnmatch.h>\n"
+      "#include <ftw.h>\n"
+      "#include <glob.h>\n"
+      "#include <grp.h>\n"
+      "#include <iconv.h>\n"
+      "#include <inttypes.h>\n"
+      "#include <iso646.h>\n"
+      "#include <langinfo.h>\n"
+      "#include <libgen.h>\n"
+      "#include <limits.h>\n"
+      "#include <locale.h>\n"
+      "#include <math.h>\n"
+      "#include <monetary.h>\n"
+      "#include <mqueue.h>\n"
+      "#include <net/if.h>\n"
+      "#include <netdb.h>\n"
+      "#include <netinet/in.h>\n"
+      "#include <netinet/tcp.h>\n"
+      "#include <nl_types.h>\n"
+      "#include <poll.h>\n"
+      "#include <pthread.h>\n"
+      "#include <pwd.h>\n"
+      "#include <regex.h>\n"
+      "#include <sched.h>\n"
+      "#include <search.h>\n"
+      "#include <semaphore.h>\n"
+      "#include <setjmp.h>\n"
+      "#include <signal.h>\n"
+      "#include <spawn.h>\n"
+      "#include <stdarg.h>\n"
+      "#include <stdbool.h>\n"
+      "#include <stddef.h>\n"
+      "#include <stdint.h>\n"
+      "#include <stdio.h>\n"
+      "#include <stdlib.h>\n"
+      "#include <string.h>\n"
+      "#include <strings.h>\n"
+      "#include <sys/ipc.h>\n"
+      "#include <sys/mman.h>\n"
+      "#include <sys/msg.h>\n"
+      "#include <sys/resource.h>\n"
+      "#include <sys/select.h>\n"
+      "#include <sys/sem.h>\n"
+      "#include <sys/shm.h>\n"
+      "#include <sys/socket.h>\n"
+      "#include <sys/stat.h>\n"
+      "#include <sys/statvfs.h>\n"
+      "#include <sys/time.h>\n"
+      "#include <sys/times.h>\n"
+      "#include <sys/types.h>\n"
+      "#include <sys/uio.h>\n"
+      "#include <sys/un.h>\n"
+      "#include <sys/utsname.h>\n"
+      "#include <sys/wait.h>\n"
+      "#include <syslog.h>\n"
+      "#include <tar.h>\n"
+      "#include <termios.h>\n"
+      "#include <tgmath.h>\n"
+      "#include <time.h>\n"
+      "#include <ulimit.h>\n"
+      "#include <unistd.h>\n"
+      "#include <utime.h>\n"
+      "#include <utmpx.h>\n"
+      "#include <wchar.h>\n"
+      "#include <wctype.h>\n"
+      "#include <wordexp.h>\n"
+    },
+    { .shorthand = NULL },
+};
+
 void out(const char* fmt, ...) {
     if (ic_outfile == NULL) {
         return;
@@ -92,7 +187,7 @@ void out(const char* fmt, ...) {
     fflush(ic_outfile);
 }
 
-int add_f(const char* fname, char* s) {
+int add_f(const char* fname, const char* s) {
     char *fpath = _last_fpath;
     _last_f += 1;
     sprintf(fpath, "%s/f%d-%s", ic_workdir, _last_f, fname);
@@ -128,19 +223,19 @@ void* compile_load_f(char* fpath) {
     return handle;
 }
 
-void add_include(char* s) {
+void add_include(const char* s) {
     add_f("include.h", s);
     systemf("( echo '#ifndef __IC_INCLUDES_H'; echo '#define __IC_INCLUDES_H'; ) > %s/includes.h; for f in %s/*include.h; do echo \"#include \\\"$f\\\"\" >> %s/includes.h; done; echo '#endif' >> %s/includes.h", ic_workdir, ic_workdir, ic_workdir, ic_workdir);
     /* TODO: test that include compiles, otherwise delete it. */
 }
 
-void add_type(char* s) {
+void add_type(const char* s) {
     add_f("type.h", s);
     systemf("( echo '#ifndef __IC_TYPES_H'; echo '#define __IC_TYPES_H'; ) > %s/types.h; for f in %s/*type.h; do echo \"#include \\\"$f\\\"\" >> %s/types.h; done; echo '#endif' >> %s/types.h", ic_workdir, ic_workdir, ic_workdir, ic_workdir);
     /* TODO: test that type compiles, otherwise delete it. */
 }
 
-void add_var(char* s) {
+void add_var(const char* s) {
     sprintf(_code,
             "#include  \"%s/includes.h\"\n"
             "#include  \"%s/types.h\"\n"
@@ -162,7 +257,7 @@ void add_var(char* s) {
     systemf("echo -n '' > %s/vars.h; for f in %s/*var.h; do echo \"#include \\\"$f\\\"\" >> %s/vars.h; done", ic_workdir, ic_workdir, ic_workdir);
 }
 
-void run(char* s) {
+void run(const char* s) {
     int runline_id = _last_f + 1;
     sprintf(_code,
             "#include \"%s/includes.h\"\n"
@@ -184,6 +279,67 @@ void run(char* s) {
     errno = _last_errno;
     runline();
     _last_errno = errno;
+}
+
+char* trim(const char* s) {
+    if (s == NULL) {
+        return NULL;
+    }
+    int start;
+    for (start=0; start<strlen(s)-1 && isspace(s[start]); start++);
+    int end;
+    for (end=strlen(s)-1; end>=0 && isspace(s[end]); end--);
+    if (end<start) end=start-1;
+    char* trimmed = strndup(&(s[start]), end-start+1);
+    return trimmed;
+}
+
+int handle_cmd(const char *);
+void expand(const char* shorthand) {
+    if (shorthand == NULL || strlen(shorthand) == 0) {
+        return;
+    }
+    char* trimmed_ts = trim(shorthand);
+    for (int i=0; macros[i].shorthand != NULL; i++) {
+        if (strcmp(macros[i].shorthand, trimmed_ts) == 0) {
+            char* exp = strdup(macros[i].expanded);
+            char* line = strtok(exp, "\n");
+            while (line) {
+                printf("x> %s\n", line);
+                handle_cmd(line);
+                line = strtok(NULL, "\n");
+            }
+            free(exp);
+            goto finish;
+        }
+    }
+    out("expansions:\n");
+    for (int i=0; macros[i].shorthand != NULL; i++) {
+        out("   '%s': %s\n", macros[i].shorthand, macros[i].description);
+    }
+    out("no expansion for shorthand '%s'\n", trimmed_ts);
+finish:
+    free(trimmed_ts);
+}
+
+int handle_cmd(const char *cmd) {
+    if (strncmp(cmd, "#", 1) == 0) {
+        add_include(cmd);
+        return 1;
+    }
+    if (strncmp(cmd, "t:", 2) == 0) {
+        add_type(cmd+2);
+        return 1;
+    }
+    if (strncmp(cmd, "v:", 2) == 0) {
+        add_var(cmd+2);
+        return 1;
+    }
+    if (strncmp(cmd, "x:", 2) == 0) {
+        expand(cmd+2);
+        return 1;
+    }
+    return 0;
 }
 
 int interactive(FILE* input) {
@@ -212,16 +368,7 @@ int interactive(FILE* input) {
             out("%s", interactive_help);
             continue;
         }
-        if (strncmp(cmdbuf, "#", 1) == 0) {
-            add_include(cmdbuf);
-            continue;
-        }
-        if (strncmp(cmdbuf, "t:", 2) == 0) {
-            add_type(cmdbuf+2);
-            continue;
-        }
-        if (strncmp(cmdbuf, "v:", 2) == 0) {
-            add_var(cmdbuf+2);
+        if (handle_cmd(cmdbuf)) {
             continue;
         }
         if (strncmp(cmdbuf, "q", 1) == 0 ||

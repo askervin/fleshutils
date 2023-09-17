@@ -1,5 +1,5 @@
 bin/ic: cmd/ic/ic.c
-	$(CC) -rdynamic -g -O0 -Wall -o $@ $<
+	$(CC) -rdynamic -g -O0 -Wall -o $@ $< -ldl
 
 clean:
 	$(RM) bin/ic
