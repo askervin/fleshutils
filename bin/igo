@@ -38,34 +38,43 @@ import sys
 import tempfile
 
 igo_help="""interactive go commands:
-  a ARGS                set command line arguments.
-  c                     clear current code and command line arguments.
-  c all                 clear all, including undo buffer, start from scratch.
-  doc IDENTIFIER        print doc, example: doc fmt.Printf.
-  src IDENTIFIER        print source code of IDENTIFIER (should be a func).
-  disasm                disassemble main.
-  disasm opt            disassemble optimized main.
-  i                     info.
-  l                     list go code.
-  ln                    list go code with line numbers.
-  lraw                  list raw code (no gofmt, goimports).
-  p EXPR[,EXPR...]      run code and print EXPR(s) at the end of main.
-  p%FMT EXPR[,EXPR...]  same as p, use fmt.Printf("%FMT...") for printing.
-  r                     run code.
-  s FILE                save (export) go code to FILE.
-  sigo FILE             save igo session (including undo buffers) to FILE.
-  ligo FILE             load igo session from FILE.
-  u                     undo last code change.
-  ub                    list undo buffers as go code.
+  :a ARGS                set command line arguments.
+  :c                     clear current code and command line arguments.
+  :c all                 clear all, including undo buffer, start from scratch.
+  :doc IDENTIFIER        print doc, example: doc fmt.Printf.
+  :src IDENTIFIER        print source code of IDENTIFIER (should be a func).
+  :disasm                disassemble main.
+  :disasm opt            disassemble optimized main.
+  :i                     info.
+  :l                     list go code.
+  :ln                    list go code with line numbers.
+  :lraw                  list raw code (no gofmt, goimports).
+  :p EXPR[,EXPR...]      run code and print EXPR(s) at the end of main.
+  :p%FMT EXPR[,EXPR...]  same as p, use fmt.Printf("%FMT...") for printing.
+  :r                     run code.
+  :s FILE                save (export) go code to FILE.
+  :sigo FILE             save igo session (including undo buffers) to FILE.
+  :ligo FILE             load igo session from FILE.
+  :u                     undo last code change.
+  :ub                    list undo buffers as go code.
   import ...            add an import.
   CODE                  add CODE into main or func.
 """
 
-guru_bin = shutil.which("golang-guru")
-if guru_bin is None:
-    guru_bin = shutil.which("guru")
-if guru_bin is None:
-    guru_bin = "MISSING DEPENDENCY: guru or golang-guru"
+def warning(msg):
+    sys.stderr.write("WARNING: %s\n" % (msg,))
+
+def require_executable(*basename_bins):
+    for basename_bin in basename_bins:
+        path_bin = shutil.which(basename_bin)
+        if path_bin is not None:
+            return path_bin
+    warning("executable missing: %s" % (" or ".join(basename_bins),))
+
+go_bin = require_executable("go")
+gofmt_bin = require_executable("gofmt")
+goimports_bin = require_executable("goimports")
+guru_bin = require_executable("golang-guru", "guru")
 
 opt_debug = 0
 opt_tempdir = tempfile.TemporaryDirectory(prefix="igo-")
@@ -117,12 +126,12 @@ def outerr(cmd, str_stdin=""):
 
 def save(code):
     open(opt_output, "w").write(code)
-    gofmt_out, gofmt_err = outerr(["gofmt", opt_output])
+    gofmt_out, gofmt_err = outerr([gofmt_bin, opt_output])
     if gofmt_err.strip():
         output("gofmt: " + format_err(gofmt_err) + "\n")
         return gofmt_err
     open(opt_output, "w").write(gofmt_out)
-    goimports_out, goimports_err = outerr(["goimports", opt_output])
+    goimports_out, goimports_err = outerr([goimports_bin, opt_output])
     if goimports_err.strip():
         output("goimports: " + format_err(gofmt_err) + "\n")
         return goimports_err
@@ -141,7 +150,7 @@ def run(code, user_args=[]):
     err = save(code)
     if err is not None:
         return err
-    out, err = outerr(["go", "run", opt_output] + user_args)
+    out, err = outerr([go_bin, "run", opt_output] + user_args)
     output(out)
     if err.strip():
         output("go run: " + format_err(err) + "\n")
@@ -234,56 +243,60 @@ def main():
             pass
         elif cmd == "h" or cmd == "help":
             output(igo_help)
-        elif cmd.startswith("a "):
-            usergo["args"]=shlex.split(cmd[2:])
+        elif cmd.startswith(":a "):
+            usergo["args"]=shlex.split(cmd[3:])
             output("command line arguments: %s\n" % usergo["args"])
             push_code = True
-        elif cmd == "a":
+        elif cmd == ":a":
             output("command line arguments: %s\n" % usergo["args"])
-        elif cmd == "c" or cmd == "c all":
+        elif cmd == ":c" or cmd == ":c all":
             usergo = {
                 "args": [],
                 "import": [],
                 "main": [],
             }
-            if cmd == "c all":
+            if cmd == ":c all":
                 usergos = []
             push_code = True
-        elif cmd == "debug+":
+        elif cmd == ":debug+":
             opt_debug += 1
-        elif cmd == "debug-":
+        elif cmd == ":debug-":
             opt_debug -= 1
-        elif cmd == "debug":
+        elif cmd == ":debug":
             output("debug level: %d, use debug+ and debug- to adjust\n" % (opt_debug,))
-        elif cmd == "disasm": # disassembly
+        elif cmd == ":disasm": # disassembly
             disasm(instantiate(template, usergo), False)
-        elif cmd == "disasm opt": # disassembly, optimized
+        elif cmd == ":disasm opt": # disassembly, optimized
             disasm(instantiate(template, usergo), True)
-        elif cmd.startswith("disasm"):
-            output("disasm: disassmeble unoptimized\n")
-            output("disasm opt: disassembe optimized\n")
-        elif cmd.startswith("doc ") or cmd.startswith("src "):
-            identifier = cmd[4:]
+        elif cmd.startswith(":disasm"):
+            output(":disasm: disassmeble unoptimized\n")
+            output(":disasm opt: disassemble optimized\n")
+        elif cmd.startswith(":doc ") or cmd.startswith(":src "):
+            identifier = cmd[5:]
             usergo["main"] = ["var _ = " + identifier]
             save(instantiate(template, usergo))
-            goguru_definition(show_src=cmd.startswith("src "))
-        elif cmd == "i": # info
+            goguru_definition(show_src=cmd.startswith(":src "))
+        elif cmd == ":i": # info
             output("work go file: %r\n" % (opt_output,))
             output("igo history:  %d\n" % (len(usergos),))
-        elif cmd == "l": # list
+            output("go: %r\n" % (go_bin,))
+            output("goimports: %r\n" % (goimports_bin,))
+            output("goguru: %r\n" % (guru_bin,))
+            output("gofmt: %r\n" % (gofmt_bin,))
+        elif cmd == ":l": # list
             save(instantiate(template, usergo))
             output(open(opt_output).read())
-        elif cmd == "ln": # list with line numbers
+        elif cmd == ":ln": # list with line numbers
             save(instantiate(template, usergo))
             output(code_with_linenos())
-        elif cmd == "lraw": # list user code raw (no gofmt, no goimports)
+        elif cmd == ":lraw": # list user code raw (no gofmt, no goimports)
             output(instantiate(template, usergo))
-        elif cmd.startswith("p ") or (cmd.startswith("p%") and " " in cmd):
-            if cmd.startswith("p "):
-                exprs = cmd[2:].strip()
+        elif cmd.startswith(":p ") or (cmd.startswith(":p%") and " " in cmd):
+            if cmd.startswith(":p "):
+                exprs = cmd[3:].strip()
                 fmt = "%#v"
             else:
-                fmt, exprs = cmd[1:].split(" ", 1)
+                fmt, exprs = cmd[2:].split(" ", 1)
             if exprs:
                 expr_count = count_top_level(exprs, ",") + 1
                 fmts = ((fmt + ", ") * expr_count)[:-2]
@@ -291,18 +304,20 @@ def main():
                 run_code = True
             else:
                 output("nothing to print\n")
-        elif cmd == "r": # run
+        elif cmd == ":r": # run
             run_code = True
-        elif cmd.startswith("s "): # save FILE
-            if cmd[2:].strip():
+        elif cmd.startswith(":s "): # save FILE
+            filename = cmd[3:].strip()
+            if filename:
                 try:
-                    open(cmd[2:].strip(),"w").write(open(opt_output).read())
+                    open(filename,"w").write(open(opt_output).read())
+                    output("saved to %r" % (filename,))
                 except Exception as e:
-                    output("save to %r failed: %s" % (cmd[2:].strip(), e))
+                    output("save to %r failed: %s" % (filename, e))
             else:
-                 output("Usage: s SAVEFILE\n")
-        elif cmd.startswith("sigo "): # save igo codes to FILE
-            filename = cmd[4:].strip()
+                 output("Usage: :s SAVEFILE\n")
+        elif cmd.startswith(":sigo "): # save igo codes to FILE
+            filename = cmd[5:].strip()
             if filename:
                 try:
                     open(filename,"w").write(repr(usergos))
@@ -310,8 +325,8 @@ def main():
                     output("save to %r failed: %s" % (filename, e))
             else:
                  output("Usage: sigo SAVEFILE.igo\n")
-        elif cmd.startswith("ligo "): # load igo codes from FILE
-            filename = cmd[4:].strip()
+        elif cmd.startswith(":ligo "): # load igo codes from FILE
+            filename = cmd[5:].strip()
             if filename:
                 try:
                     usergos = eval(open(filename).read())
@@ -319,10 +334,10 @@ def main():
                     output("save to %r failed: %s" % (filename, e))
             else:
                  output("Usage: ligo LOADFILE.igo\n")
-        elif cmd == "u": # undo, pop from stack
+        elif cmd == ":u": # undo, pop from stack
             if len(usergos) > 1:
                 usergos.pop()
-        elif cmd == "ub": # list undo buffer
+        elif cmd == ":ub": # list undo buffer
             for n, usergo in enumerate(usergos):
                 save(instantiate(template, usergo))
                 output("=== code %d ===\n%s\n" %
