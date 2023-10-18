@@ -33,9 +33,11 @@ Options:
   -f TIMEFORMAT   use TIMEFORMAT as output timestamp format (man strftime).
                   The default format is "%s.%f".
   -F LINEFORMAT   use LINEFORMAT as line output format:
-                  - %(fl)f: time elapsed since first line
-                  - %(pl)f: time elapsed since previous line
-                  - %(ts)s: TimeStamp
+                  - %(fl)f:   seconds elapsed since first line
+                  - %(flh)s:  time elapsed since first line, human readable
+                  - %(pl)f:   seconds elapsed since previous line
+                  - %(plh)s:  time elapsed since previous line, human readable
+                  - %(ts)s:   TimeStamp
                   - %(line)s: original line
                   The default is "%(ts)s %(line)s".
   -o OUTFILE      write output lines to OUTFILE. Supports many -o's.
@@ -47,8 +49,10 @@ Options:
 
 Examples:
 
-1. Prefix lines with elapsed time in milliseconds between observed outputs:
-   cmd | tsl -u -F "%(pl)6.3f %(line)s"
+1. Prefix lines with elapsed seconds between observed lines
+   and human readable time elapsed since the first line.
+
+   cmd | tsl -u -F "%(pl)6.3f %(flh)10s %(line)s"
 
 2. Record outputs of two concurrent processes,
    prefix lines with timestamp and command label,
@@ -77,6 +81,32 @@ def unbuffered_xreadlines(fileobj):
         if c == "\n":
             yield "".join(ln)
             ln = []
+
+def elapsed_hr(seconds):
+    """return human readable version of elapsed seconds"""
+    if seconds == 0:
+        return "0ms"
+    ms = seconds * 1000
+    s = ms // 1000
+    ms -= s * 1000
+    m = s // 60
+    s -= m * 60
+    h = m // 60
+    m -= h * 60
+    d = h // 24
+    h -= d * 24
+    hr = ""
+    if round(ms) > 0:
+        hr = "%dms" % (round(ms),)
+    if s > 0:
+        hr = "%ds%s" % (s, hr)
+    if m > 0:
+        hr = "%dm%s" % (m, hr)
+    if h > 0:
+        hr = "%dh%s" % (h, hr)
+    if d > 0:
+        hr = "%dd%s" % (d, hr)
+    return hr
 
 if __name__ == "__main__":
     opt_timeformat = "%s.%f" #"%Y-%m-%d %H:%M:%S"
@@ -120,9 +150,13 @@ if __name__ == "__main__":
             tprevline = tnow
             tfirstline = tnow
         ts = tnow.strftime(opt_timeformat)
+        fl = (tnow - tfirstline).total_seconds()
+        pl = (tnow - tprevline).total_seconds()
         out_line = opt_lineformat % {
-            'fl': (tnow - tfirstline).total_seconds(),
-            'pl': (tnow - tprevline).total_seconds(),
+            'fl': fl,
+            'flh': elapsed_hr(fl),
+            'pl': pl,
+            'plh': elapsed_hr(pl),
             'ts': ts,
             'line': line,
         }
