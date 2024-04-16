@@ -33,10 +33,6 @@ Options:
   -l, --list [LABEL=]SET  visualise set in list format, optionally with LABEL
   -m, --mask [LABEL=]SET  visualise set in mask format, optionally with LABEL
   -p, --parser PARSER     use PARSER ("list" or "mask") to parse data in FILEs
-  -r, --raw               print raw contents next to labels
-  -g, --group             print files grouped based on visualized sets
-  -i, --ignore-empty      silently skip empty files and sets
-  --short                 print label and visualisation on the same line
 
 Examples:
   visualsets --list all=0-127 /sys/devices/system/node/node*/cpulist
@@ -61,8 +57,6 @@ coord2brbit = [
 
 # listset2bits parses list set syntax (like "0,4-7,63") into bitvector in int
 def listset2bits(s):
-    if s == "":
-        return 0
     bits = 0
     for comma in s.split(","):
         rng = comma.split("-")
@@ -75,8 +69,6 @@ def listset2bits(s):
 
 # maskset2bits parses mask set syntax (like "00ff00") into bitvector int
 def maskset2bits(s):
-    if s == "":
-        return 0
     return int(s.replace(",", ""), 16)
 
 # bits2bitmap renders bitvector int into bitmap dictionary that maps
@@ -148,40 +140,17 @@ def output(s):
     sys.stdout.flush()
 
 # output_set parses a set from data and writes it into output
-def output_set(data, label=None, parser=None, raw=False, mode="files", short=False, ignore_empty=False):
-    if data == "" and ignore_empty:
-        return
+def output_set(data, label=None, parser=None):
     out_label = ""
     if label:
         out_label = opt_label_fmt % (label,)
-    if raw:
-        out_label = out_label.replace("\n", data.strip() + "\n")
-    if short and "\n" in out_label:
-        out_label = out_label.replace("\n", " ")
     if parser is None:
         parser = autodetect_parser(data)
     try:
         bits = parser(data)
     except Exception as e:
         error("error parsing \"%s\": %s)" % (data, e))
-    if bits > 0:
-        visualset = bitmap2braille(bits2bitmap(bits, height=opt_height))
-    else:
-        visualset = ""
-    if mode == "files":
-        output(out_label + visualset + "\n")
-    elif mode == "group":
-        key = (bits, visualset)
-        if not key in visuals2files:
-            visuals2files[key] = []
-        visuals2files[key].append(out_label)
-
-# output_group prints what has been already output in group format
-def output_group():
-    for key in sorted(visuals2files):
-        for label in sorted(visuals2files[key]):
-            output(label)
-        output(key[1] + "\n")
+    output(out_label + bitmap2braille(bits2bitmap(bits, height=opt_height))+ "\n")
 
 # main program
 if __name__ == "__main__":
@@ -190,14 +159,9 @@ if __name__ == "__main__":
     opt_height = 4
     opt_label_fmt = "%s:\n"
     opt_parser = None
-    opts_output = {}
-    visuals2files = {}
-    try:
-        opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hy:l:m:p:rgi',
-            ['help', 'height=', 'list=', 'mask=', 'parser=', 'raw', 'group', 'short', 'ignore-empty'])
-    except Exception as e:
-        error(str(e))
+    opts, remainder = getopt.gnu_getopt(
+        sys.argv[1:], 'hy:l:m:p:',
+        ['help', 'height=', 'list=', 'mask=', 'parser='])
     for opt, arg in opts:
         if opt in ["-h", "--help"]:
             print(__doc__)
@@ -208,12 +172,12 @@ if __name__ == "__main__":
             label = None
             if "=" in arg:
                 label, arg = arg.split("=", 1)
-            output_set(arg, label=label, parser=listset2bits, **opts_output)
+            output_set(arg, label=label, parser=listset2bits)
         elif opt in ["-m", "--mask"]:
             label = None
             if "=" in arg:
                 label, arg = arg.split("=", 1)
-            output_set(arg, label=label, parser=maskset2bits, **opts_output)
+            output_set(arg, label=label, parser=maskset2bits)
         elif opt in ["-p", "--parser"]:
             if arg.lower() == "list":
                 opt_parser = listset2bits
@@ -221,19 +185,6 @@ if __name__ == "__main__":
                 opt_parser = maskset2bits
             else:
                 error("invalid --parser=%s, expected one of: list, mask" % (arg,))
-        elif opt in ["-r", "--raw"]:
-            opts_output["raw"] = True
-        elif opt in ["-g", "--group"]:
-            opts_output["mode"] = "group"
-        elif opt in ["--short"]:
-            opts_output["short"] = True
-        elif opt in ["-i", "--ignore-empty"]:
-            opts_output["ignore_empty"] = True
-
     for fname in remainder:
         data = open(fname).read()
-        data = data.replace("\x00", "").strip()
-        output_set(data, label=fname, parser=opt_parser, **opts_output)
-
-    if opts_output.get("mode", "") == "group":
-        output_group()
+        output_set(data, label=fname, parser=opt_parser)
