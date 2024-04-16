@@ -34,7 +34,9 @@ Options:
   -m, --mask [LABEL=]SET  visualise set in mask format, optionally with LABEL
   -p, --parser PARSER     use PARSER ("list" or "mask") to parse data in FILEs
   -r, --raw               print raw contents next to labels
-  -g, --group             print files grouped based on visualized sets
+  -g, --group             group and print files/labels based on sets contents
+  --group-one             like --group but print only one file/label per group
+  --group-zero            like --group but print no files/labels, only contents
   -i, --ignore-empty      silently skip empty files and sets
   --short                 print label and visualisation on the same line
 
@@ -177,9 +179,11 @@ def output_set(data, label=None, parser=None, raw=False, mode="files", short=Fal
         visuals2files[key].append(out_label)
 
 # output_group prints what has been already output in group format
-def output_group():
+def output_group(files=-1):
     for key in sorted(visuals2files):
-        for label in sorted(visuals2files[key]):
+        for n, label in enumerate(sorted(visuals2files[key])):
+            if files >= 0 and n >= files:
+                break
             output(label)
         output(key[1] + "\n")
 
@@ -191,11 +195,12 @@ if __name__ == "__main__":
     opt_label_fmt = "%s:\n"
     opt_parser = None
     opts_output = {}
+    opts_group = {}
     visuals2files = {}
     try:
         opts, remainder = getopt.gnu_getopt(
             sys.argv[1:], 'hy:l:m:p:rgi',
-            ['help', 'height=', 'list=', 'mask=', 'parser=', 'raw', 'group', 'short', 'ignore-empty'])
+            ['help', 'height=', 'list=', 'mask=', 'parser=', 'raw', 'group', 'group-one', 'group-zero', 'short', 'ignore-empty'])
     except Exception as e:
         error(str(e))
     for opt, arg in opts:
@@ -223,8 +228,12 @@ if __name__ == "__main__":
                 error("invalid --parser=%s, expected one of: list, mask" % (arg,))
         elif opt in ["-r", "--raw"]:
             opts_output["raw"] = True
-        elif opt in ["-g", "--group"]:
+        elif opt in ["-g", "--group", "--group-one", "--group-zero"]:
             opts_output["mode"] = "group"
+            if opt in ["--group-one"]:
+                opts_group["files"] = 1
+            if opt in ["--group-zero"]:
+                opts_group["files"] = 0
         elif opt in ["--short"]:
             opts_output["short"] = True
         elif opt in ["-i", "--ignore-empty"]:
@@ -236,4 +245,4 @@ if __name__ == "__main__":
         output_set(data, label=fname, parser=opt_parser, **opts_output)
 
     if opts_output.get("mode", "") == "group":
-        output_group()
+        output_group(**opts_group)
