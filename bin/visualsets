@@ -39,6 +39,9 @@ Options:
   --group-zero            like --group but print no files/labels, only contents
   -i, --ignore-empty      silently skip empty files and sets
   --short                 print label and visualisation on the same line
+  -U, --union             visualise union of all sets at the end
+  -I, --intersection      visualise intersection of all sets at the end
+  -D, --difference        substract remaining sets from the first set
 
 Examples:
   visualsets --list all=0-127 /sys/devices/system/node/node*/cpulist
@@ -60,6 +63,27 @@ coord2brbit = [
 #     (0, 3): 6,
 #     (1, 3): 7,
 # }
+
+# bits2listset returns the list representation of a set
+def bits2listset(bits):
+    n = 0
+    range_start, range_end = -1, -1
+    ranges = []
+    while bits > 0:
+        if bits & 1:
+            range_end = n
+            if range_start < 0:
+                range_start = n
+        if bits & 1 == 0 or (bits >> 1) == 0:
+            if range_start >= 0:
+                if range_start == range_end:
+                    ranges.append("%d" % (range_start,))
+                else:
+                    ranges.append("%d-%d" % (range_start, range_end))
+            range_start = -1
+        n += 1
+        bits >>= 1
+    return ",".join(ranges)
 
 # listset2bits parses list set syntax (like "0,4-7,63") into bitvector in int
 def listset2bits(s):
@@ -151,25 +175,32 @@ def output(s):
 
 # output_set parses a set from data and writes it into output
 def output_set(data, label=None, parser=None, raw=False, mode="files", short=False, ignore_empty=False):
-    if data == "" and ignore_empty:
+    if (data == "" or data == 0) and ignore_empty:
         return
     out_label = ""
     if label:
         out_label = opt_label_fmt % (label,)
     if raw:
-        out_label = out_label.replace("\n", data.strip() + "\n")
+        if isinstance(data, str):
+            out_label = out_label.replace("\n", " " + data.strip() + "\n")
+        else:
+            out_label = out_label.replace("\n", " " + bits2listset(data) + "\n")
     if short and "\n" in out_label:
         out_label = out_label.replace("\n", " ")
-    if parser is None:
-        parser = autodetect_parser(data)
-    try:
-        bits = parser(data)
-    except Exception as e:
-        error("error parsing \"%s\": %s)" % (data, e))
+    if isinstance(data, str):
+        if parser is None:
+            parser = autodetect_parser(data)
+        try:
+            bits = parser(data)
+        except Exception as e:
+            error("error parsing \"%s\": %s)" % (data, e))
+    else:
+        bits = data
     if bits > 0:
         visualset = bitmap2braille(bits2bitmap(bits, height=opt_height))
     else:
         visualset = ""
+    all_output.append((out_label, bits, visualset))
     if mode == "files":
         output(out_label + visualset + "\n")
     elif mode == "group":
@@ -187,6 +218,29 @@ def output_group(files=-1):
             output(label)
         output(key[1] + "\n")
 
+def output_operation(operation, **passthrough_opts):
+    global all_output
+    if len(all_output) == 0:
+        return
+    if operation == "union":
+        data = 0
+        for _, bits, _ in all_output:
+            data |= bits
+        output_set(data, label="union of %d sets" % (len(all_output),), **passthrough_opts)
+    elif operation == "intersection":
+        data = all_output[0][1]
+        for _, bits, _ in all_output[1:]:
+            data &= bits
+        output_set(data, label="intersection of %d sets" % (len(all_output),), **passthrough_opts)
+    elif operation == "difference":
+        data = all_output[0][1]
+        for _, bits, _ in all_output[1:]:
+            data -= (data & bits)
+        output_set(data, label="difference of %d sets" % (len(all_output),), **passthrough_opts)
+    else:
+        error("unknown operation: %s" % (operation,))
+    all_output = all_output[:-1] # do not count latest operation output in later operations
+
 # main program
 if __name__ == "__main__":
     import sys
@@ -194,13 +248,17 @@ if __name__ == "__main__":
     opt_height = 4
     opt_label_fmt = "%s:\n"
     opt_parser = None
+    opt_operations = []
     opts_output = {}
     opts_group = {}
     visuals2files = {}
+    all_output = []
     try:
         opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hy:l:m:p:rgi',
-            ['help', 'height=', 'list=', 'mask=', 'parser=', 'raw', 'group', 'group-one', 'group-zero', 'short', 'ignore-empty'])
+            sys.argv[1:], 'hy:l:m:p:rgiUID',
+            ['help', 'height=', 'list=', 'mask=', 'parser=',
+             'raw', 'group', 'group-one', 'group-zero', 'short', 'ignore-empty',
+             'union', 'intersection', 'difference'])
     except Exception as e:
         error(str(e))
     for opt, arg in opts:
@@ -238,11 +296,22 @@ if __name__ == "__main__":
             opts_output["short"] = True
         elif opt in ["-i", "--ignore-empty"]:
             opts_output["ignore_empty"] = True
+        elif opt in ["-U", "--union"]:
+            opt_operations.append("union")
+        elif opt in ["-I", "--intersection"]:
+            opt_operations.append("intersection")
+        elif opt in ["-D", "--difference"]:
+            opt_operations.append("difference")
+        else:
+            error("internal error: unhandled option '%s'" % (opt,))
 
     for fname in remainder:
         data = open(fname).read()
         data = data.replace("\x00", "").strip()
         output_set(data, label=fname, parser=opt_parser, **opts_output)
+
+    for operation in opt_operations:
+        output_operation(operation, **opts_output)
 
     if opts_output.get("mode", "") == "group":
         output_group(**opts_group)
