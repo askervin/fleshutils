@@ -47,6 +47,7 @@ Options:
                     - file: file name
                     - level: indentation level as a number
   --depth NUM     print NUM levels of indentation context starting from match.
+  --branch        show preceding if-branches when match is in an else branch.
   --irs IRS       use IRS as input record separator instead of new line,
                   enables matching strings from multiple lines.
   --igrep         use grep/grepctx output record separator as IRS.
@@ -104,6 +105,10 @@ def output(out_line):
         if opt_unbuffered_out:
             out_file.flush()
 
+_re_else_branch = re.compile('[^a-zA-Z0-9].*else[^a-zA-Z0-9]')
+def _is_else_branch(line):
+    return _re_else_branch.match(line)
+
 def _grep_lines(line_iter):
     ctx_indentation = {}
     max_level = -1
@@ -122,9 +127,14 @@ def _grep_lines(line_iter):
             for old_level in range(indentation_level + 1, max_level + 1):
                 if old_level in ctx_indentation:
                     del ctx_indentation[old_level]
-        ctx_indentation[indentation_level] = {'lineno': line_index + 1, 'line': line, 'level': indentation_level, 'file': in_file_name}
+        if opt_branch and _is_else_branch(line) and indentation_level in ctx_indentation:
+            # keep previous branch(es) in ctx_indentation[indentation_level]
+            pass
+        else:
+            ctx_indentation[indentation_level] = []
+        ctx_indentation[indentation_level].append({'lineno': line_index + 1, 'line': line, 'level': indentation_level, 'file': in_file_name})
         if min_visible_level <= indentation_level <= max_visible_level:
-            output(opt_format % ctx_indentation[indentation_level])
+            output(opt_format % ctx_indentation[indentation_level][-1])
         else:
             for regexp in regexps:
                 m = regexp.search(line)
@@ -132,7 +142,11 @@ def _grep_lines(line_iter):
                     output("--\n")
                     for i in range(indentation_level + 1):
                         if i in ctx_indentation:
-                            output(opt_format % ctx_indentation[i])
+                            if opt_branch:
+                                for ctx in ctx_indentation[i]:
+                                    output(opt_format % ctx)
+                            else:
+                                output(opt_format % ctx_indentation[i][-1])
                     if opt_depth and max_visible_level == -1:
                         if min_visible_level == -1:
                             min_visible_level = indentation_level + 1
@@ -150,6 +164,7 @@ if __name__ == "__main__":
     opt_recursive = False
     opt_dereference_recursive = False
     opt_no_messages = False
+    opt_branch = False
     opt_depth = 0
     opt_invert_match = False
     opt_irs = '\n'
@@ -157,7 +172,7 @@ if __name__ == "__main__":
         sys.argv[1:], 'hHine:rRsv',
         ['help', 'format=', 'out=', 'line-buffered',
          'ignore-case', 'recursive', 'dereference-recursive', 'no-messages',
-         'depth=', 'irs=', 'igrep', 'invert-match',
+         'branch', 'depth=', 'irs=', 'igrep', 'invert-match',
          # for compatibilty with GNU grep, but no-operation
          'color', 'null'])
     for opt, arg in opts:
@@ -196,6 +211,8 @@ if __name__ == "__main__":
         elif opt in ["--line-buffered"]:
             opt_unbuffered_in = True
             opt_unbuffered_out = True
+        elif opt in ["--branch"]:
+            opt_branch = True
         elif opt in ["--depth"]:
             try:
                 opt_depth = int(arg)
