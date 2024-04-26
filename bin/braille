@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2024 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""braille - render graphics using braille characters
+
+Usage: braille [options] [FILE...]
+
+FILEs are in netpbm (Network Portable Bitmap) format (PBM, PGM,
+PNM). File "-" reads data from standard input.
+
+Options:
+  -h, --help              print help
+  -l, --line [NUM:]EXPR   bitmap line NUM set to list of ints from eval(EXPR)
+  -t, --table EXPR        bitmap table [[x0y0, x1y0...], [x0y1, x1y1, ...]]
+  -v, --view GEOMETRY     view WIDTHxHEIGHT[+OFFSET_X+OFFSET_Y]
+  -g, --grayscale         output with grayscale RGB
+  -c, --color             output RGB
+
+Examples:
+  braille --line '2:[1]*10+[0]*5'
+
+  # RGB-colored lines, thick above (copy line 1 from line 0), thin below
+  braille -l '0:[0x00ff00]*30 + [0xff0000] * 8' \
+          -l '1:bitmap.line(0)' \
+          -l '3:[0x00ff00]*30 + [0xff0000]*4' \
+          --color
+
+  # Render a graph in terminal
+  # using "dot" from graphviz, "convert" from imagemagick
+  dot graph.gv -Tpng | convert png:- pbm:- | braille - | less -S
+
+"""
+
+# coord2brbit maps (x, y) coordinates to offset bits in utf8/braille
+# defined for width x height: 2 x 4
+coord2brbit = [
+    [0, 1, 2, 6],
+    [3, 4, 5, 7],
+]
+
+# brbits2chr converts braille character bits to a braille character
+def brbits2chr(bits):
+    base = 10240
+    offset = 0
+    for bit in range(8):
+        if bits & (1 << bit) != 0:
+            offset += 1 << bit
+    return chr(base + offset)
+
+class Bitmap:
+    def __init__(self, width=0, height=0, data=None):
+        self._width = width
+        self._height = height
+        self._data = data
+        self._max_color = 1
+    # from_table() creates bitmap from table
+    # [[x0y0, x1y0, ...],
+    #  [x0y1, x1y1, ...],
+    #  ...]
+    def from_netpbm(self, bmdata):
+        magic, size, data = bmdata.split(b'\n', 2)
+        width = int(size.split()[0])
+        height = int(size.split()[1])
+        array = []
+        if magic == b"P1":
+            for c in data:
+                if c == b"0":
+                    array.append(0)
+                elif c == b"1":
+                    array.append(1)
+        elif magic == b"P2":
+            array.extend([int(col) for col in data.split()])
+        elif magic == b"P3":
+            max_color, data = data.split(b'\n', 1)
+            if max_color != b"255":
+                raise Exception("only 8-bit (256 shades of gray) P5 images supported, got %s" % (max_color,))
+            self._max_color=255
+            rgbdata = [int(i) for i in data.split()]
+            for i in range(width * height):
+                r, g, b = rgbdata[i*3:i*3+3]
+                array.append((r<<16) + (g<<8) + b)
+        elif magic == b"P4":
+            x = 0
+            for c in data:
+                for b in range(8):
+                    if x >= width:
+                        break
+                    x += 1
+                    array.append((c >> (7-b)) & 1)
+                if x >= width:
+                    x = 0
+            array = array[0:width*height]
+        elif magic == b"P5":
+            max_color, data = data.split(b'\n', 1)
+            if max_color != b"255":
+                raise Exception("only 8-bit (256 shades of gray) P5 images supported, got %s" % (max_color,))
+            self._max_color=255
+            array.extend(data[0:width*height])
+        elif magic == b"P6":
+            max_color, data = data.split(b'\n', 1)
+            if max_color != b"255":
+                raise Exception("only 8-bit (256 color) P6 images supported, got %s" % (max_color,))
+            self._max_color=255
+            for i in range(width * height):
+                r, g, b = data[i*3:i*3+3]
+                array.append((r<<16) + (g<<8) + b)
+        else:
+            raise Exception("invalid PBM/PGM/PNM magic, expected P1, P2, P3, P4 or P6")
+        self._max_color = max(self._max_color, max(array))
+        self.from_array(width, height, array)
+    def from_table(self, table):
+        self._data = table
+        self._height = len(self._data)
+        self._width = max([len(line) for line in self._data])
+        for row in self._data:
+            self._max_color = max(self._max_color, max(row))
+    def from_array(self, width, height, array):
+        self._width = width
+        self._height = height
+        self._data = [[] for n in range(self._height)]
+        for n, pixel in enumerate(array):
+            self._data[n // self._width].append(pixel)
+        self._max_color = max(array)
+    def set_line(self, lineno, linedata):
+        if self._data is None:
+            self._data = []
+        if lineno == -1:
+            lineno = len(self._data)
+        if lineno >= len(self._data):
+            [self._data.append([]) for n in range(lineno-len(self._data)+1)]
+        self._data[lineno] = linedata
+        if len(linedata) > self._width:
+            self._width = len(linedata)
+        self._height = len(self._data)
+        if len(linedata) > 0:
+            self._max_color = max(self._max_color, max(linedata))
+    def line(self, lineno):
+        if lineno < len(self._data):
+            return self._data[lineno]
+        return []
+    def size(self):
+        return (self._width, self._height)
+    def set_size(self, width=None, height=None):
+        if not width is None:
+            self._width = width
+        if not height is None:
+            self._height = height
+    def max_color(self):
+        return self._max_color
+    def pixel(self, x, y, default=None):
+        if y >= len(self._data) or x >= len(self._data[y]):
+            return default
+        return self._data[y][x]
+    # to_braille() converts a bitmap into a string of braille
+    # characters. If bitmap height > 4 the result will be a
+    # multiline string.
+    def to_braille(self, colormode=0):
+        width, height = self.size()
+        max_color = self.max_color()
+        if width == 0 or height == 0:
+            return ""
+        braille = []
+        for row in range((3+height)//4):
+            braille.append([])
+        for x2 in range((1+width)//2):
+            for y4 in range((3+height)//4):
+                braille_char_bits = 0
+                pixel_count = 0
+                color_sum = 0
+                if colormode == 2:
+                    color_sum = (0, 0, 0)
+                for x in range(min(2, width - x2*2)):
+                    for y in range(min(4, height - y4*4)):
+                        c = self.pixel(x2*2+x, y4*4+y, default=0)
+                        if c != 0:
+                            braille_char_bits |= 1 << coord2brbit[x][y]
+                            pixel_count += 1
+                            if colormode == 1: # grayscale
+                                color_sum += c
+                            elif colormode == 2: # 8-bit RGB
+                                r, g, b = c >> 16, c >> 8 & 255, c & 255
+                                color_sum = (color_sum[0] + b, color_sum[1] + g, color_sum[2] + r)
+                color, nocolor = "", ""
+                if colormode == 1 and pixel_count > 0 and max_color > 0:
+                    grayscale = 232 + int(15 * (color_sum / pixel_count) / max_color)
+                    color = "\x1b[38;5;%dm" % (grayscale,)
+                    nocolor = "\x1b[0m"
+                elif colormode == 2 and pixel_count > 0:
+                    r = int(color_sum[2]/pixel_count)
+                    g = int(color_sum[1]/pixel_count)
+                    b = int(color_sum[0]/pixel_count)
+                    color = "\x1b[38;2;%d;%d;%dm" % (r, g, b)
+                    nocolor = "\x1b[0m"
+                braille[y4].append(color + brbits2chr(braille_char_bits) + nocolor)
+        return '\n'.join(''.join(c for c in line) for line in braille)
+
+class BitmapCoordwrap:
+    def __init__(self, bitmap):
+        self._bitmap = bitmap
+        self.set_view(0, 0, *self._bitmap.size())
+    def set_view(self, top_x, top_y, width, height):
+        self._width, self._height = width, height
+        self._top_x, self._top_y = top_x, top_y
+    def size(self):
+        return (self._width, self._height)
+    def max_color(self):
+        return self._bitmap.max_color()
+    def pixel(self, x, y, default=None):
+        if x >= self._width or y >= self._height:
+            return default
+        return self._bitmap.pixel(x + self._top_x, y + self._top_y, default=default)
+    def to_braille(self, *args, **kwargs):
+        return Bitmap.to_braille(self, *args, **kwargs)
+
+# error prints error message and exits process
+def error(msg, exit_status=1):
+    sys.stderr.write("braille: %s\n" % (msg,))
+    sys.exit(exit_status)
+
+# output prints a string
+def output(s):
+    sys.stdout.write(s)
+    sys.stdout.flush()
+
+# main program
+if __name__ == "__main__":
+    import sys
+    import getopt
+    bitmap = Bitmap()
+    opt_colormode = 0
+    opt_size = None
+    opt_offset = (0, 0)
+    try:
+        opts, remainder = getopt.gnu_getopt(
+            sys.argv[1:], 'hv:l:t:gc',
+            ['help', 'line=', 'view=', 'table=',
+             'grayscale', 'color'])
+    except Exception as e:
+        error(str(e))
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            sys.exit(0)
+        elif opt in ["-l", "--line"]:
+            lineno = -1
+            if ":" in arg:
+                lineno, arg = arg.split(":",1)
+            linedata = eval(arg)
+            bitmap.set_line(int(lineno), linedata)
+        elif opt in ["-t", "--table"]:
+            bitmap.from_table(eval(arg))
+        elif opt in ["-v", "--view"]:
+            if "+" in arg:
+                arg, offset_arg = arg.split("+", 1)
+                opt_offset = [int(n) for n in offset_arg.split("+")]
+            opt_size = [int(n) for n in arg.split("x")]
+        elif opt in ["-g", "--grayscale"]:
+            opt_colormode = 1
+        elif opt in ["-c", "--color"]:
+            opt_colormode = 2
+        else:
+            error("internal error: unhandled option '%s'" % (opt,))
+
+    if bitmap.size() != (0, 0):
+        if not opt_size is None:
+            bitmap = BitmapCoordwrap(bitmap)
+            bitmap.set_view(*opt_offset, *opt_size)
+        output(bitmap.to_braille(colormode=opt_colormode) + "\n")
+
+    for filename in remainder:
+        if filename == "-":
+            data = sys.stdin.buffer.read()
+        else:
+            data = open(filename, 'rb').read()
+        bitmap.from_netpbm(data)
+        if not opt_size is None:
+            bitmap = BitmapCoordwrap(bitmap)
+            bitmap.set_view(*opt_offset, *opt_size)
+        output(bitmap.to_braille(colormode=opt_colormode) + "\n")
