@@ -26,7 +26,7 @@
 
 """visualsets - visualise sets in terminal
 
-Usage: visualsets [options] [FILE...]
+Usage: visualsets [options] [FILE[>|CMD]...]
 
 Options:
   -h, --help              print help.
@@ -42,9 +42,19 @@ Options:
   -U, --union             visualise union of all sets at the end
   -I, --intersection      visualise intersection of all sets at the end
   -D, --difference        substract remaining sets from the first set
+  -C, --count=N           visualise elements that appeared at least in N sets
 
 Examples:
   visualsets --list all=0-127 /sys/devices/system/node/node*/cpulist
+
+  If a filename contains ">|" original file contents will be piped to
+  the shell command after ">|", and output of that command will be handled
+  as the set description. For example, select Cpus_allowed_list from
+  each /proc/PID/status:
+
+  for pid in $(pgrep python3); do
+    visualsets "/proc/$pid/status>|awk '/Cpus_allowed_list/{print \$2}'"
+  done
 """
 
 # coord2brbit maps (x, y) coordinates to offset bits in utf8/braille
@@ -53,16 +63,6 @@ coord2brbit = [
     [0, 1, 2, 6],
     [3, 4, 5, 7],
 ]
-# coord2brbit = {
-#     (0, 0): 0,
-#     (0, 1): 1,
-#     (0, 2): 2,
-#     (1, 0): 3,
-#     (1, 1): 4,
-#     (1, 2): 5,
-#     (0, 3): 6,
-#     (1, 3): 7,
-# }
 
 # bits2listset returns the list representation of a set
 def bits2listset(bits):
@@ -237,12 +237,29 @@ def output_operation(operation, **passthrough_opts):
         for _, bits, _ in all_output[1:]:
             data -= (data & bits)
         output_set(data, label="difference of %d sets" % (len(all_output),), **passthrough_opts)
+    elif operation[0] == "count":
+        maxbits = max([bits for _, bits, _ in all_output])
+        bit_count = {}
+        bit = 1
+        while bit < maxbits:
+            count = 0
+            for _, bits, _ in all_output:
+                if bits & bit != 0:
+                    count += 1
+            bit_count[bit] = count
+            bit <<= 1
+        data = 0
+        for bit, count in bit_count.items():
+            if count >= operation[1]:
+                data |= bit
+        output_set(data, label="elements in at least %d sets" % (operation[1],), **passthrough_opts)
     else:
         error("unknown operation: %s" % (operation,))
     all_output = all_output[:-1] # do not count latest operation output in later operations
 
 # main program
 if __name__ == "__main__":
+    import subprocess
     import sys
     import getopt
     opt_height = 4
@@ -255,10 +272,10 @@ if __name__ == "__main__":
     all_output = []
     try:
         opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hy:l:m:p:rgiUID',
+            sys.argv[1:], 'hy:l:m:p:rgiUIDC:',
             ['help', 'height=', 'list=', 'mask=', 'parser=',
              'raw', 'group', 'group-one', 'group-zero', 'short', 'ignore-empty',
-             'union', 'intersection', 'difference'])
+             'union', 'intersection', 'difference', 'count='])
     except Exception as e:
         error(str(e))
     for opt, arg in opts:
@@ -302,13 +319,26 @@ if __name__ == "__main__":
             opt_operations.append("intersection")
         elif opt in ["-D", "--difference"]:
             opt_operations.append("difference")
+        elif opt in ["-C", "--count"]:
+            opt_operations.append(("count", int(arg)))
         else:
             error("internal error: unhandled option '%s'" % (opt,))
 
     for fname in remainder:
-        data = open(fname).read()
-        data = data.replace("\x00", "").strip()
-        output_set(data, label=fname, parser=opt_parser, **opts_output)
+        if fname == "-":
+            for lineidx, line in enumerate(sys.stdin.readlines()):
+                data = line.replace("\x00", "").strip()
+                if len(data) == 0:
+                    continue
+                output_set(data, label="<stdin>:%d" % (lineidx+1,), parser=opt_parser, **opts_output)
+        else:
+            if ">|" in fname:
+                fname, syscmd = fname.split(">|", 1)
+                data = subprocess.check_output(syscmd, shell=True, input=open(fname, "rb").read()).strip().decode("utf8")
+            else:
+                data = open(fname).read()
+                data = data.replace("\x00", "").strip()
+            output_set(data, label=fname, parser=opt_parser, **opts_output)
 
     for operation in opt_operations:
         output_operation(operation, **opts_output)
