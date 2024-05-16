@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2024 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+r"""csv-query [options] FILE...
+
+Options:
+  -h, --help
+  -c, --columns                      output only column headers (field names)
+  -C, --no-columns                   do not output column headers at all
+  -d, --delimiter DELIMITER          set field separator, the default is ";"
+  -D, --out-delimiter OUT_DELIMITER  set output field separator, the default
+                                     is DELIMITER.
+  -W, --out-width COLWIDTH           set output column width
+
+Options for SQL-like queries:
+  -s, --select FIELD[<DELIMITER> FIELD...] output values from selected FIELDs.
+                                     FIELDs can contain wildcards.
+                                     The default is --select "*".
+  -w, --where EXPR                   output fields from a row if EXPR is True
+                                     where EXPR refers to FIELD contents on the row
+                                     i['FIELD'] value as integer
+                                     f['FIELD'] value as float
+                                     s['FIELD'] value as string
+                                     If FIELD is syntactically a valid
+                                     Python variable then it can be
+                                     used as is, and it contains the
+                                     value as string.
+
+Examples:
+  csv-query -f my-cats.csv \
+    -s name -s age \
+    -w "int(age)>=4 and f['weight [kg]']>4.5 and name.startswith('Marshmal')"
+"""
+
+import csv
+import fnmatch
+import getopt
+import sys
+
+# error prints error message and exits process
+def error(msg, exit_status=1):
+    if msg:
+        sys.stderr.write("csv-query: %s\n" % (msg,))
+    if exit_status is not None:
+        sys.exit(exit_status)
+
+def query(data, fields, filt):
+    result = []
+    typeid_castf = {"i": int, "s": str, "f": float}
+    typed_data_init = {key:{} for key in typeid_castf}
+    filtered_data = []
+    if filt is None:
+        filtered_data = data
+    else:
+        filtered_data = []
+        for row in data:
+            typed_data = dict(typed_data_init)
+            for key, value in row.items():
+                for typeid, castf in typeid_castf.items():
+                    try:
+                        typed_data[typeid][key] = castf(value)
+                    except:
+                        pass
+                if key not in typeid_castf:
+                    typed_data[key] = value
+            if eval(filt.__code__, typed_data):
+                filtered_data.append(row)
+    for row in filtered_data:
+        result.append([])
+        for field in fields:
+            result[-1].append(row[field])
+    return result
+
+if __name__ == "__main__":
+    import getopt
+    opt_columns = False
+    opt_no_columns = False
+    opt_files = []
+    opt_delimiter = ";"
+    opt_out_delimiter = None
+    opt_out_width = None
+    opt_select = []
+    opt_where = None
+    try:
+        opts, remainder = getopt.gnu_getopt(
+            sys.argv[1:], 'hcCd:D:W:f:s:w:',
+            ['help', 'columns', 'no-columns', 'delimiter=', 'out-delimiter=',
+             'out-width=',
+             'file=', 'select=', 'where='])
+    except Exception as e:
+        error(str(e))
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            sys.exit(0)
+        elif opt in ["-c", "--columns"]:
+            opt_columns = True
+        elif opt in ["-C", "--no-columns"]:
+            opt_no_columns = True
+        elif opt in ["-f", "--file"]:
+            opt_files.append(arg)
+        elif opt in ["-d", "--delimiter"]:
+            opt_delimiter = arg
+        elif opt in ["-D", "--out-delimiter"]:
+            opt_out_delimiter = arg
+        elif opt in ["-W", "--out-width"]:
+            opt_out_width = int(arg)
+        elif opt in ["-s", "--select"]:
+            opt_select.extend(arg.split(opt_delimiter))
+        elif opt in ["-w", "--where"]:
+            if opt_where is not None:
+                error("multiple -w/--where")
+            opt_where = eval("lambda:" + arg)
+        else:
+            error("internal error: unhandled option '%s'" % (opt,))
+
+    if opt_out_delimiter is None:
+        opt_out_delimiter = opt_delimiter
+
+    opt_files.extend(remainder)
+    if len(opt_files) == 0:
+        opt_files.append("-")
+
+    if opt_where is not None and len(opt_select) == 0:
+        opt_select.append("*")
+
+    for fname in opt_files:
+        if fname == "-":
+            data_reader = csv.DictReader(sys.stdin, delimiter=opt_delimiter)
+        else:
+            data_reader = csv.DictReader(open(fname), delimiter=opt_delimiter)
+        if opt_columns:
+            print(opt_delimiter.join(col for col in data_reader.fieldnames))
+        if opt_select:
+            data = [row for row in data_reader]
+            fields = []
+            for field_pattern in opt_select:
+                fields.extend([f for f in data_reader.fieldnames if fnmatch.fnmatch(f, field_pattern)])
+            result = query(data, fields, opt_where)
+            try:
+                if opt_out_width is not None:
+                    fmt = "%" + str(opt_out_width) + "s"
+                    fields = [fmt % (s,) for s in fields]
+                    for row_idx, row in enumerate(result):
+                        result[row_idx] = [fmt % (col,) for col in row]
+                if not opt_no_columns:
+                    print(opt_out_delimiter.join(fields))
+                for row in result:
+                    print(opt_out_delimiter.join([str(col) for col in row]))
+            except:
+                error("", 0)
