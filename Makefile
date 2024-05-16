@@ -7,7 +7,7 @@ bin/ic: cmd/ic/ic.c
 
 install: build
 	mkdir -p $(PREFIX)/bin
-	install -v bin/* $(PREFIX)/bin
+	bash -c 'for f in bin/*; do [[ "$$f" != *~ ]] && install -v $$f $(PREFIX)/$$f; done'
 
 clean:
 	$(RM) bin/ic
