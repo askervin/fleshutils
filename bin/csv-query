@@ -33,31 +33,48 @@ Options:
   -d, --delimiter DELIMITER          set field separator, the default is ";"
   -D, --out-delimiter OUT_DELIMITER  set output field separator, the default
                                      is DELIMITER.
-  -W, --out-width COLWIDTH           set output column width
+  -W, --out-width COLWIDTH           set output column width.
+  -t, --type TYPE                    convert input field values into TYPE
+                                     ("f" for float, "i" for integer)
+                                     where possible. Avoids conversions in
+                                     EXPRs.
 
 Options for SQL-like queries:
-  -s, --select FIELD[<DELIMITER> FIELD...] output values from selected FIELDs.
+  -s, --select FIELDSPEC[<DELIMITER> FIELDSPEC...] output values from selected
+                                     fields.
+                                     FIELDSPEC ::= FIELD | [NAME] "=" EXPR
                                      FIELDs can contain wildcards.
+                                     NAME is column name for EXPR value.
+                                     If NAME is omitted, EXPR is used as NAME.
                                      The default is --select "*".
-  -w, --where EXPR                   output fields from a row if EXPR is True
-                                     where EXPR refers to FIELD contents on the row
-                                     i['FIELD'] value as integer
-                                     f['FIELD'] value as float
-                                     s['FIELD'] value as string
-                                     If FIELD is syntactically a valid
-                                     Python variable then it can be
-                                     used as is, and it contains the
-                                     value as string.
+  -w, --where EXPR                   output only rows where EXPR is True.
+  -g, --group [[NAME]=]EXPR          Group rows by the value of EXPR. Every
+                                     separate value forms a new group of data.
+                                     If NAME is given, value of EXPR will be
+                                     included in output in column NAME. If only
+                                     = is given without name, EXPR is the column.
+Scalar functions in EXPR:
+  i(field), f(field), s(field)       field value as integer, float or string.
+
+Aggregate functions in EXPR in --select
+  I(field), F(field), S(field)       field as int, float and string array.
+  SUM(field), COUNT(field), AVG(field)  sum, count and average.
+  PCT(n, field), MIN(field), MAX(field)  the nth percentile, min and max.
+  STRJOIN(delim, field)              join string fields with delim.
 
 Examples:
   csv-query -f my-cats.csv \
     -s name -s age \
-    -w "int(age)>=4 and f['weight [kg]']>4.5 and name.startswith('Marshmal')"
+    -w "i(age)>=4 and f(weight)>4.5 and name.startswith('Marshmal')"
+
+  csv-query --type float -f my-cats.csv \
+    -s 'avg_weight=AVG(weight);name' -g 'age//5'
 """
 
 import csv
 import fnmatch
 import getopt
+import re
 import sys
 
 # error prints error message and exits process
@@ -67,31 +84,123 @@ def error(msg, exit_status=1):
     if exit_status is not None:
         sys.exit(exit_status)
 
-def query(data, fields, filt):
+def query(data, fields, filt, group):
+    if len(data) == 0:
+        return []
+    data_fields = set(data[0].keys())
     result = []
-    typeid_castf = {"i": int, "s": str, "f": float}
+    aggr_funcs = {
+        "F": lambda v: [float(f) for f in v],
+        "I": lambda v: [int(i) for i in v],
+        "S": lambda v: [s for s in v],
+        "AVG": lambda v: sum(v)/len(v) if len(v)>0 else "N/A",
+        "SUM": lambda v: sum(v),
+        "COUNT": lambda v: len(v),
+        "PCT": lambda n, v: sorted(v)[int(len(v)*n/100) if n<100 else -1],
+        "ROUND": lambda v: [round(e) for e in v],
+        "STRJOIN": lambda delim, v: delim.join([str(e) for e in v]),
+    }
+    aggr_func_names = set(aggr_funcs.keys())
+    scalar_funcs = {
+        "f": lambda v: float(v),
+        "i": lambda v: int(v),
+        "s": lambda v: v,
+    }
+    typeid_castf = dict(aggr_funcs)
+    typeid_castf.update(scalar_funcs)
     typed_data_init = {key:{} for key in typeid_castf}
     filtered_data = []
-    if filt is None:
-        filtered_data = data
-    else:
-        filtered_data = []
-        for row in data:
-            typed_data = dict(typed_data_init)
-            for key, value in row.items():
-                for typeid, castf in typeid_castf.items():
-                    try:
-                        typed_data[typeid][key] = castf(value)
-                    except:
-                        pass
-                if key not in typeid_castf:
-                    typed_data[key] = value
-            if eval(filt.__code__, typed_data):
-                filtered_data.append(row)
+    groupid_resultindex = {}
+
+    field_exprs = []
+    field_funcs = []
+    field_names = []
+    field_idx = []
+    field_aggr = []
+    extra_fields = []
+
+    for i, field in enumerate(fields):
+        if isinstance(field, tuple): # field is (name, expr)
+            ff = eval("lambda:" + field[1])
+            field_exprs.append(field[1])
+            field_funcs.append(ff)
+            field_names.append(field[0])
+            field_idx.append(i)
+            field_aggr.append(len(set(ff.__code__.co_names).intersection(aggr_func_names)) > 0)
+            fields[i] = field[0] # replace (name, expr) with name only
+    group_id_field = None
+    if sum(field_aggr) > 0 and group is None:
+        # there are aggregate functions but no grouping => put all to the same group
+        group = ("", "0")
+
+    if group:
+        group_id_field = group[0] if group[0] else "groupid"
+
+    if group is not None:
+        field_exprs.append(group[1])
+        field_funcs.append(eval("lambda:" + group[1]))
+        field_names.append(group_id_field)
+        field_idx.append(len(fields))
+        field_aggr.append(False)
+    extra_fields = sorted(
+        set([n
+             for ff in field_funcs
+             for n in ff.__code__.co_names
+             if n in data_fields and n not in fields
+             ]))
+    if group is not None:
+        if group_id_field != "groupid":
+            fields.append(group_id_field)
+        else:
+            extra_fields.append(group_id_field)
+
+    filtered_data = []
+    env = dict(typeid_castf)
+    for row in data:
+        env['row'] = row
+        env.update(row)
+        for i, ff in enumerate(field_funcs):
+            if field_aggr[i]: # aggregate functions will be evaluated after grouping
+                continue
+            field_value = eval(ff.__code__, env)
+            env[field_names[i]] = field_value
+            row[field_names[i]] = field_value
+        if filt is None or eval(filt.__code__, env):
+            filtered_data.append(row)
+
+    user_and_extra_fields = fields + extra_fields
     for row in filtered_data:
-        result.append([])
-        for field in fields:
-            result[-1].append(row[field])
+        if group is None:
+            result.append([row[field] for field in fields])
+        else:
+            group_value = row[group_id_field]
+            resultindex = groupid_resultindex.get(group_value, None)
+            if resultindex is None:
+                resultindex = len(result)
+                groupid_resultindex[group_value] = resultindex
+                result.append([[] for _ in range(len(user_and_extra_fields))])
+            for fieldindex, field in enumerate(user_and_extra_fields):
+                if field == group_id_field:
+                    result[resultindex][fieldindex] = row[field]
+                elif field in row: # named aggregate fields are not yet in row
+                    result[resultindex][fieldindex].append(row[field])
+
+    if group is not None:
+        aggregated_result = []
+        env = dict(typeid_castf)
+        for resrow in result:
+            aggregated_result.append([resrow[i] for i in range(len(fields))])
+            env.update({field: resrow[i] for i, field in enumerate(user_and_extra_fields)})
+            try:
+                for i, ff in enumerate(field_funcs):
+                    if field_idx[i] < len(fields):
+                        if field_aggr[i]:
+                            aggregated_result[-1][field_idx[i]] = eval(ff.__code__, env)
+            except Exception as e:
+                error("group aggregation error on field %s, code %s: %s" %
+                      (field_names[i], field_exprs[i], e))
+            result = aggregated_result
+
     return result
 
 if __name__ == "__main__":
@@ -104,12 +213,14 @@ if __name__ == "__main__":
     opt_out_width = None
     opt_select = []
     opt_where = None
+    opt_group = None
+    opt_type = None
     try:
         opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hcCd:D:W:f:s:w:',
+            sys.argv[1:], 'hcCd:D:W:f:s:w:g:t:',
             ['help', 'columns', 'no-columns', 'delimiter=', 'out-delimiter=',
-             'out-width=',
-             'file=', 'select=', 'where='])
+             'out-width=', 'type=',
+             'file=', 'select=', 'where=', 'group='])
     except Exception as e:
         error(str(e))
     for opt, arg in opts:
@@ -132,8 +243,25 @@ if __name__ == "__main__":
             opt_select.extend(arg.split(opt_delimiter))
         elif opt in ["-w", "--where"]:
             if opt_where is not None:
-                error("multiple -w/--where")
+                error("multiple -w/--where expressions")
             opt_where = eval("lambda:" + arg)
+        elif opt in ["-g", "--group"]:
+            if opt_group is not None:
+                error("multiple -g/--group expressions")
+            m = re.match('([a-zA-Z0-9_]*)=(?!=)(.*)', arg)
+            if m:
+                field, expr = m.groups()
+                if field == "":
+                    field = expr
+            else:
+                field, expr = "", arg
+            opt_group = (field, expr)
+        elif opt in ["-t", "--type"]:
+            try:
+                opt_type = {"f": float, "float": float,
+                            "i": int, "int": int}[arg.lower()]
+            except KeyError:
+                error("invalid -t/--type '%s', expected 'f', 'i'" % (arg,))
         else:
             error("internal error: unhandled option '%s'" % (opt,))
 
@@ -146,6 +274,8 @@ if __name__ == "__main__":
 
     if opt_where is not None and len(opt_select) == 0:
         opt_select.append("*")
+    if opt_where is None and opt_group is not None:
+        opt_where = lambda: True
 
     for fname in opt_files:
         if fname == "-":
@@ -156,10 +286,24 @@ if __name__ == "__main__":
             print(opt_delimiter.join(col for col in data_reader.fieldnames))
         if opt_select:
             data = [row for row in data_reader]
+            if opt_type:
+                for row in data:
+                    for field in row:
+                        try:
+                            row[field] = opt_type(row[field])
+                        except ValueError:
+                            pass
             fields = []
             for field_pattern in opt_select:
-                fields.extend([f for f in data_reader.fieldnames if fnmatch.fnmatch(f, field_pattern)])
-            result = query(data, fields, opt_where)
+                m = re.match('([a-zA-Z0-9_]*)=(?!=)(.*)', field_pattern)
+                if m: # expression field
+                    field, expr = m.groups()
+                    if field == "":
+                        field = expr
+                    fields.append((field, expr))
+                else:
+                    fields.extend([f for f in data_reader.fieldnames if fnmatch.fnmatch(f, field_pattern)])
+            result = query(data, fields, opt_where, opt_group)
             try:
                 if opt_out_width is not None:
                     fmt = "%" + str(opt_out_width) + "s"
