@@ -97,6 +97,8 @@ def query(data, fields, filt, group):
         "SUM": lambda v: sum(v),
         "COUNT": lambda v: len(v),
         "PCT": lambda n, v: sorted(v)[int(len(v)*n/100) if n<100 else -1],
+        "MIN": lambda v: min(v),
+        "MAX": lambda v: max(v),
         "ROUND": lambda v: [round(e) for e in v],
         "STRJOIN": lambda delim, v: delim.join([str(e) for e in v]),
     }
