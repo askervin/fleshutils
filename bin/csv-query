@@ -58,7 +58,9 @@ Scalar functions in EXPR:
 
 Aggregate functions in EXPR in --select
   I(field), F(field), S(field)       field as int, float and string array.
-  SUM(field), COUNT(field), AVG(field)  sum, count and average.
+  SUM(field), COUNT(field)           sum and number of elements in field.
+  AVG(field), SD(field), VAR(field)  average, standard deviation and variance.
+  COV(f0, f1), CORR(f0, f1)          covariance and correlation of two fields.
   PCT(n, field), MIN(field), MAX(field)  the nth percentile, min and max.
   STRJOIN(delim, field)              join string fields with delim.
 
@@ -75,6 +77,7 @@ import csv
 import fnmatch
 import getopt
 import re
+import statistics
 import sys
 
 # error prints error message and exits process
@@ -92,13 +95,17 @@ def query(data, fields, filt, group):
     aggr_funcs = {
         "F": lambda v: [float(f) for f in v],
         "I": lambda v: [int(i) for i in v],
-        "S": lambda v: [s for s in v],
-        "AVG": lambda v: sum(v)/len(v) if len(v)>0 else "N/A",
+        "S": lambda v: [str(s) for s in v],
+        "AVG": lambda v: sum(v)/len(v) if len(v)>0 else "nan",
         "SUM": lambda v: sum(v),
         "COUNT": lambda v: len(v),
-        "PCT": lambda n, v: sorted(v)[int(len(v)*n/100) if n<100 else -1],
-        "MIN": lambda v: min(v),
-        "MAX": lambda v: max(v),
+        "PCT": lambda n, v: sorted(v)[int(len(v)*n/100) if n<100 else -1] if len(v)>0 else "nan",
+        "MIN": lambda v: min(v) if len(v)>0 else "nan",
+        "MAX": lambda v: max(v) if len(v)>0 else "nan",
+        "VAR": lambda v: statistics.variance(v) if len(v)>1 else "nan",
+        "SD": lambda v: statistics.stdev(v) if len(v)>1 else "nan",
+        "COV": lambda v0, v1: statistics.covariance(v0, v1) if len(v0)>1 else "nan",
+        "CORR": lambda v0, v1: statistics.correlation(v0, v1) if len(v0)>1 else "nan",
         "ROUND": lambda v: [round(e) for e in v],
         "STRJOIN": lambda delim, v: delim.join([str(e) for e in v]),
     }
@@ -106,7 +113,7 @@ def query(data, fields, filt, group):
     scalar_funcs = {
         "f": lambda v: float(v),
         "i": lambda v: int(v),
-        "s": lambda v: v,
+        "s": lambda v: str(v),
     }
     typeid_castf = dict(aggr_funcs)
     typeid_castf.update(scalar_funcs)
