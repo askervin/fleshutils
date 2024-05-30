@@ -30,6 +30,8 @@ Usage: visualsets [options] [FILE[>|CMD]...]
 
 Options:
   -h, --help              print help.
+  -c, --column COL        visualize only column COL from input
+  -s, --silent            ignore parse errors
   -l, --list [LABEL=]SET  visualise set in list format, optionally with LABEL
   -m, --mask [LABEL=]SET  visualise set in mask format, optionally with LABEL
   -p, --parser PARSER     use PARSER ("list" or "mask") to parse data in FILEs
@@ -56,6 +58,8 @@ Examples:
     visualsets "/proc/$pid/status>|awk '/Cpus_allowed_list/{print \$2}'"
   done
 """
+
+import re
 
 # coord2brbit maps (x, y) coordinates to offset bits in utf8/braille
 # defined for width x height: 2 x 4
@@ -174,7 +178,7 @@ def output(s):
     sys.stdout.flush()
 
 # output_set parses a set from data and writes it into output
-def output_set(data, label=None, parser=None, raw=False, mode="files", short=False, ignore_empty=False):
+def output_set(data, label=None, parser=None, raw=False, mode="files", short=False, ignore_empty=False, silent=False):
     if (data == "" or data == 0) and ignore_empty:
         return
     out_label = ""
@@ -193,6 +197,8 @@ def output_set(data, label=None, parser=None, raw=False, mode="files", short=Fal
         try:
             bits = parser(data)
         except Exception as e:
+            if silent:
+                return
             error("error parsing \"%s\": %s)" % (data, e))
     else:
         bits = data
@@ -208,6 +214,8 @@ def output_set(data, label=None, parser=None, raw=False, mode="files", short=Fal
         if not key in visuals2files:
             visuals2files[key] = []
         visuals2files[key].append(out_label)
+    elif mode == "column":
+        output(visualset)
 
 # output_group prints what has been already output in group format
 def output_group(files=-1):
@@ -266,14 +274,15 @@ if __name__ == "__main__":
     opt_label_fmt = "%s:\n"
     opt_parser = None
     opt_operations = []
+    opt_column = None
     opts_output = {}
     opts_group = {}
     visuals2files = {}
     all_output = []
     try:
         opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hy:l:m:p:rgiUIDC:',
-            ['help', 'height=', 'list=', 'mask=', 'parser=',
+            sys.argv[1:], 'hc:sy:l:m:p:rgiUIDC:',
+            ['help', 'height=', 'list=', 'mask=', 'parser=', 'column=', 'silent',
              'raw', 'group', 'group-one', 'group-zero', 'short', 'ignore-empty',
              'union', 'intersection', 'difference', 'count='])
     except Exception as e:
@@ -282,6 +291,14 @@ if __name__ == "__main__":
         if opt in ["-h", "--help"]:
             print(__doc__)
             sys.exit(0)
+        elif opt in ["-c", "--column"]:
+            opts_output["mode"] = "column"
+            try:
+                opt_column = int(arg)
+            except Exception as e:
+                error("invalid --column=%s: %s" % (arg, e))
+        elif opt in ["-s", "--silent"]:
+            opts_output["silent"] = True
         elif opt in ["-y", "--height"]:
             opt_height = int(arg)
         elif opt in ["-l", "--list"]:
@@ -330,7 +347,18 @@ if __name__ == "__main__":
                 data = line.replace("\x00", "").strip()
                 if len(data) == 0:
                     continue
-                output_set(data, label="<stdin>:%d" % (lineidx+1,), parser=opt_parser, **opts_output)
+                if opt_column is None:
+                    output_set(data, label="<stdin>:%d" % (lineidx+1,), parser=opt_parser, **opts_output)
+                else:
+                    col = 0
+                    for nows, ws in re.findall(r'(\S+)|(\s*)', data):
+                        if nows != "":
+                            col += 1
+                            output(nows)
+                            if col == opt_column:
+                                output_set(nows, label="", parser=opt_parser, **opts_output)
+                        output(ws)
+                    output("\n")
         else:
             if ">|" in fname:
                 fname, syscmd = fname.split(">|", 1)
