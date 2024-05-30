@@ -62,7 +62,9 @@ Aggregate functions in EXPR in --select
   AVG(field), SD(field), VAR(field)  average, standard deviation and variance.
   COV(f0, f1), CORR(f0, f1)          covariance and correlation of two fields.
   PCT(n, field), MIN(field), MAX(field)  the nth percentile, min and max.
+  SORTED(field)                      field values sorted
   STRJOIN(delim, field)              join string fields with delim.
+  UNIQ(field)                        unique values in field
 
 Examples:
   csv-query -f my-cats.csv \
@@ -107,7 +109,9 @@ def query(data, fields, filt, group):
         "COV": lambda v0, v1: statistics.covariance(v0, v1) if len(v0)>1 else "nan",
         "CORR": lambda v0, v1: statistics.correlation(v0, v1) if len(v0)>1 else "nan",
         "ROUND": lambda v: [round(e) for e in v],
+        "SORTED": lambda v: sorted(v),
         "STRJOIN": lambda delim, v: delim.join([str(e) for e in v]),
+        "UNIQ": lambda v: sorted(set(v)),
     }
     aggr_func_names = set(aggr_funcs.keys())
     scalar_funcs = {
