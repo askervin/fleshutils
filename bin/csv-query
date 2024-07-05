@@ -38,6 +38,10 @@ Options:
                                      ("f" for float, "i" for integer)
                                      where possible. Avoids conversions in
                                      EXPRs.
+  -X, --exec-file STMT               execute STMT when starting new file.
+  -x, --exec-row STMT                execute STMT on each row before evaluating
+                                     SQL-like select, where or group EXPR.
+  --post-mortem                      Start debugger on error.
 
 Options for SQL-like queries:
   -s, --select FIELDSPEC[<DELIMITER> FIELDSPEC...] output values from selected
@@ -82,6 +86,8 @@ import re
 import statistics
 import sys
 
+nan = float("nan")
+
 # error prints error message and exits process
 def error(msg, exit_status=1):
     if msg:
@@ -89,7 +95,7 @@ def error(msg, exit_status=1):
     if exit_status is not None:
         sys.exit(exit_status)
 
-def query(data, fields, filt, group):
+def query(data, fields, filt, group, exec_file=[], exec_row=[]):
     if len(data) == 0:
         return []
     data_fields = set(data[0].keys())
@@ -98,16 +104,16 @@ def query(data, fields, filt, group):
         "F": lambda v: [float(f) for f in v],
         "I": lambda v: [int(i) for i in v],
         "S": lambda v: [str(s) for s in v],
-        "AVG": lambda v: sum(v)/len(v) if len(v)>0 else "nan",
+        "AVG": lambda v: sum(v)/len(v) if len(v)>0 else nan,
         "SUM": lambda v: sum(v),
         "COUNT": lambda v: len(v),
-        "PCT": lambda n, v: sorted(v)[int(len(v)*n/100) if n<100 else -1] if len(v)>0 else "nan",
-        "MIN": lambda v: min(v) if len(v)>0 else "nan",
-        "MAX": lambda v: max(v) if len(v)>0 else "nan",
-        "VAR": lambda v: statistics.variance(v) if len(v)>1 else "nan",
-        "SD": lambda v: statistics.stdev(v) if len(v)>1 else "nan",
-        "COV": lambda v0, v1: statistics.covariance(v0, v1) if len(v0)>1 else "nan",
-        "CORR": lambda v0, v1: statistics.correlation(v0, v1) if len(v0)>1 else "nan",
+        "PCT": lambda n, v: sorted(v)[int(len(v)*n/100) if n<100 else -1] if len(v)>0 else nan,
+        "MIN": lambda v: min(v) if len(v)>0 else nan,
+        "MAX": lambda v: max(v) if len(v)>0 else nan,
+        "VAR": lambda v: statistics.variance(v) if len(v)>1 else nan,
+        "SD": lambda v: statistics.stdev(v) if len(v)>1 else nan,
+        "COV": lambda v0, v1: statistics.covariance(v0, v1) if len(v0)>1 else nan,
+        "CORR": lambda v0, v1: statistics.correlation(v0, v1) if len(v0)>1 else nan,
         "ROUND": lambda v: [round(e) for e in v],
         "SORTED": lambda v: sorted(v),
         "STRJOIN": lambda delim, v: delim.join([str(e) for e in v]),
@@ -169,9 +175,13 @@ def query(data, fields, filt, group):
 
     filtered_data = []
     env = dict(typeid_castf)
+    for stmt in exec_file:
+        exec(stmt, env)
     for row in data:
         env['row'] = row
         env.update(row)
+        for stmt in exec_row:
+            exec(stmt, env)
         for i, ff in enumerate(field_funcs):
             if field_aggr[i]: # aggregate functions will be evaluated after grouping
                 continue
@@ -228,12 +238,16 @@ if __name__ == "__main__":
     opt_where = None
     opt_group = None
     opt_type = None
+    opt_exec_file = []
+    opt_exec_row = []
+    opt_post_mortem = False
     try:
         opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hcCd:D:W:f:s:w:g:t:',
+            sys.argv[1:], 'hcCd:D:W:f:X:x:s:w:g:t:',
             ['help', 'columns', 'no-columns', 'delimiter=', 'out-delimiter=',
-             'out-width=', 'type=',
-             'file=', 'select=', 'where=', 'group='])
+             'out-width=', 'type=', 'exec-file=', 'exec-row=',
+             'file=', 'select=', 'where=', 'group=',
+             'post-mortem'])
     except Exception as e:
         error(str(e))
     for opt, arg in opts:
@@ -252,6 +266,10 @@ if __name__ == "__main__":
             opt_out_delimiter = arg
         elif opt in ["-W", "--out-width"]:
             opt_out_width = int(arg)
+        elif opt in ["-X", "--exec-file"]:
+            opt_exec_file.append(compile(arg, "/parameter --exec-file='%s'" % (arg,), "single"))
+        elif opt in ["-x", "--exec-row"]:
+            opt_exec_row.append(compile(arg, "/parameter --exec-row='%s'" % (arg,), "single"))
         elif opt in ["-s", "--select"]:
             opt_select.extend(arg.split(opt_delimiter))
         elif opt in ["-w", "--where"]:
@@ -275,6 +293,8 @@ if __name__ == "__main__":
                             "i": int, "int": int}[arg.lower()]
             except KeyError:
                 error("invalid -t/--type '%s', expected 'f', 'i'" % (arg,))
+        elif opt in ["--post-mortem"]:
+            opt_post_mortem = True
         else:
             error("internal error: unhandled option '%s'" % (opt,))
 
@@ -316,7 +336,17 @@ if __name__ == "__main__":
                     fields.append((field, expr))
                 else:
                     fields.extend([f for f in data_reader.fieldnames if fnmatch.fnmatch(f, field_pattern)])
-            result = query(data, fields, opt_where, opt_group)
+            try:
+                result = query(data, fields, opt_where, opt_group,
+                               exec_file=opt_exec_file,
+                               exec_row=opt_exec_row)
+            except:
+                if opt_post_mortem:
+                    import pdb
+                    _, _, tb = sys.exc_info()
+                    pdb.post_mortem(tb)
+                else:
+                    raise
             try:
                 if opt_out_width is not None:
                     fmt = "%" + str(opt_out_width) + "s"
