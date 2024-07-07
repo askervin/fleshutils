@@ -57,10 +57,14 @@ Options for SQL-like queries:
                                      If NAME is given, value of EXPR will be
                                      included in output in column NAME. If only
                                      = is given without name, EXPR is the column.
+                                     A field name in a select EXPR evaluates to
+                                     a vector of field's values in each group.
+
 Scalar functions in EXPR:
   i(field), f(field), s(field)       field value as integer, float or string.
+  sw(n, value)                       sliding window, vector of n latest values.
 
-Aggregate functions in EXPR in --select
+Vector functions in --select EXPR, use in conjuction with --group or sw():
   I(field), F(field), S(field)       field as int, float and string array.
   SUM(field), COUNT(field)           sum and number of elements in field.
   AVG(field), SD(field), VAR(field)  average, standard deviation and variance.
@@ -71,12 +75,20 @@ Aggregate functions in EXPR in --select
   UNIQ(field)                        unique values in field
 
 Examples:
+  # Print names and ages of cats matching a --where condition
   csv-query -f my-cats.csv \
     -s name -s age \
     -w "i(age)>=4 and f(weight)>4.5 and name.startswith('Marshmal')"
 
+  # Print average weight of cats by age groups
   csv-query --type float -f my-cats.csv \
-    -s 'avg_weight=AVG(weight);name' -g 'age//5'
+    -s 'avg_weight=AVG(weight);name' -g 'age_group=age//5'
+
+  # Print 20th, 50th and 80th age percentiles
+  csv-query -tf cats.csv -s '=PCT(20, age);=PCT(50, age);=PCT(90, age)'
+
+  # Print the maximum weight in a sliding window of previous 5 cats
+  csv-query -tf cats.csv -s '=MAX(sw(5, weight))'
 """
 
 import csv
@@ -94,6 +106,23 @@ def error(msg, exit_status=1):
         sys.stderr.write("csv-query: %s\n" % (msg,))
     if exit_status is not None:
         sys.exit(exit_status)
+
+_sw_history = {} # name -> [window data values]
+_sw_updated = {} # name -> row of last update
+def sw_context(name, row):
+    """returns sliding window function for window 'name' on a row"""
+    if name not in _sw_history:
+        _sw_history[name] = []
+        _sw_updated[name] = -1
+    def sw(size, value):
+        history = _sw_history[name]
+        if _sw_updated[name] < row:
+            _sw_updated[name] = row
+            history.append(value)
+            if len(history) > size:
+                history.pop(0)
+        return history[:]
+    return sw
 
 def query(data, fields, filt, group, exec_file=[], exec_row=[]):
     if len(data) == 0:
@@ -136,6 +165,7 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
     field_names = []
     field_idx = []
     field_aggr = []
+    field_sw = [] # field uses a sliding window
     extra_fields = []
 
     for i, field in enumerate(fields):
@@ -145,11 +175,14 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
             field_funcs.append(ff)
             field_names.append(field[0])
             field_idx.append(i)
-            field_aggr.append(len(set(ff.__code__.co_names).intersection(aggr_func_names)) > 0)
+            names_in_code = set(ff.__code__.co_names)
+            field_aggr.append(len(names_in_code.intersection(aggr_func_names)) > 0)
+            field_sw.append("sw" in names_in_code)
             fields[i] = field[0] # replace (name, expr) with name only
     group_id_field = None
-    if sum(field_aggr) > 0 and group is None:
-        # there are aggregate functions but no grouping => put all to the same group
+    if sum(field_aggr) > 0 and sum(field_sw) == 0 and group is None:
+        # there are vector functions but no sliding window or grouping
+        # => put all rows to the same group.
         group = ("", "0")
 
     if group:
@@ -161,6 +194,7 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
         field_names.append(group_id_field)
         field_idx.append(len(fields))
         field_aggr.append(False)
+        field_sw.append(False)
     extra_fields = sorted(
         set([n
              for ff in field_funcs
@@ -177,14 +211,16 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
     env = dict(typeid_castf)
     for stmt in exec_file:
         exec(stmt, env)
-    for row in data:
+    for row_idx, row in enumerate(data):
         env['row'] = row
         env.update(row)
         for stmt in exec_row:
             exec(stmt, env)
         for i, ff in enumerate(field_funcs):
-            if field_aggr[i]: # aggregate functions will be evaluated after grouping
+            if field_aggr[i] and group is not None: # aggregate functions will be evaluated after grouping
                 continue
+            if field_sw[i]:
+                env["sw"] = sw_context(field_names[i], row_idx)
             field_value = eval(ff.__code__, env)
             env[field_names[i]] = field_value
             row[field_names[i]] = field_value
