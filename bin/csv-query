@@ -33,7 +33,11 @@ Options:
   -d, --delimiter DELIMITER          set field separator, the default is ";"
   -D, --out-delimiter OUT_DELIMITER  set output field separator, the default
                                      is DELIMITER.
-  -W, --out-width COLWIDTH           set output column width.
+  -W, --out-width COLWIDTH           set output column width, special widths:
+                                     ld (left-align dynamic)
+                                     ldx (left-align dynamic except leftmost)
+                                     rd (right-align dynamic)
+                                     rdx (right-align dynamic except rightmost)
   -t, --type TYPE                    convert input field values into TYPE
                                      ("f" for float, "i" for integer)
                                      where possible. Avoids conversions in
@@ -301,7 +305,10 @@ if __name__ == "__main__":
         elif opt in ["-D", "--out-delimiter"]:
             opt_out_delimiter = arg
         elif opt in ["-W", "--out-width"]:
-            opt_out_width = int(arg)
+            if arg in ["ld", "ldx", "rd", "rdx"]:
+                opt_out_width = arg
+            else:
+                opt_out_width = int(arg)
         elif opt in ["-X", "--exec-file"]:
             opt_exec_file.append(compile(arg, "/parameter --exec-file='%s'" % (arg,), "single"))
         elif opt in ["-x", "--exec-row"]:
@@ -385,13 +392,31 @@ if __name__ == "__main__":
                     raise
             try:
                 if opt_out_width is not None:
-                    fmt = "%" + str(opt_out_width) + "s"
-                    fields = [fmt % (s,) for s in fields]
+                    if opt_out_width in ["ld", "ldx", "rd", "rdx"]:
+                        # output width per column
+                        col_widths = [len(field) for field in fields]
+                        for row in result:
+                            for col_idx, col in enumerate(row):
+                                if len(str(col)) > col_widths[col_idx]:
+                                    col_widths[col_idx] = len(str(col))
+                        if opt_out_width in ["rd", "rdx"]:
+                            align = 1
+                        else:
+                            align = -1
+                        col_fmt = ["%" + str(align * (col_width+2)) + "s" for col_width in col_widths]
+                        if opt_out_width == "rdx":
+                            col_fmt[-1] = "%s"
+                        if opt_out_width == "ldx":
+                            col_fmt[0] = "%" + str(col_widths[0]+2) + "s"
+                    else:
+                        # common output width to all columns
+                        col_fmt = ["%" + str(opt_out_width) + "s" for _ in fields]
+                    fields = [col_fmt[i] % (s,) for i, s in enumerate(fields)]
                     for row_idx, row in enumerate(result):
-                        result[row_idx] = [fmt % (col,) for col in row]
+                        result[row_idx] = [col_fmt[i] % (col,) for i, col in enumerate(row)]
                 if not opt_no_columns:
                     print(opt_out_delimiter.join(fields))
                 for row in result:
                     print(opt_out_delimiter.join([str(col) for col in row]))
-            except:
-                error("", 0)
+            except Exception as e:
+                error(str(e), 1)
