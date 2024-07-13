@@ -76,7 +76,9 @@ Vector functions in --select EXPR, use in conjuction with --group or sw():
   PCT(n, field), MIN(field), MAX(field)  the nth percentile, min and max.
   SORTED(field)                      field values sorted
   STRJOIN(delim, field)              join string fields with delim.
-  UNIQ(field)                        unique values in field
+  UNIQ(field)                        unique values in field.
+  NORMALP(field)                     P value for "field normally distributed".
+  TTESTP(field1, field2)             P value for T-test of field1 and field2.
 
 Examples:
   # Print names and ages of cats matching a --where condition
@@ -152,6 +154,11 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
         "STRJOIN": lambda delim, v: delim.join([str(e) for e in v]),
         "UNIQ": lambda v: sorted(set(v)),
     }
+    scipy_aggr_funcs = {
+        "NORMALP": lambda v0: scipy.stats.normaltest(v0)[1],
+        "TTESTP": lambda v0, v1: scipy.stats.ttest_ind(v0, v1)[1],
+    }
+    aggr_funcs.update(scipy_aggr_funcs)
     aggr_func_names = set(aggr_funcs.keys())
     scalar_funcs = {
         "f": lambda v: float(v),
@@ -172,6 +179,8 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
     field_sw = [] # field uses a sliding window
     extra_fields = []
 
+    need_scipy = set()
+    scipy_func_names = set(scipy_aggr_funcs.keys())
     for i, field in enumerate(fields):
         if isinstance(field, tuple): # field is (name, expr)
             ff = eval("lambda:" + field[1])
@@ -181,6 +190,7 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
             field_idx.append(i)
             names_in_code = set(ff.__code__.co_names)
             field_aggr.append(len(names_in_code.intersection(aggr_func_names)) > 0)
+            need_scipy = need_scipy.union(scipy_func_names.intersection(names_in_code))
             field_sw.append("sw" in names_in_code)
             fields[i] = field[0] # replace (name, expr) with name only
     group_id_field = None
@@ -211,6 +221,14 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
         else:
             extra_fields.append(group_id_field)
 
+    if need_scipy:
+        try:
+            import scipy
+            import scipy.stats
+            typeid_castf["scipy"] = scipy
+        except Exception as e:
+            raise Exception("using %s requires scipy, but import scipy failed: %s" %
+                            (", ".join(sorted(need_scipy)), e))
     filtered_data = []
     env = dict(typeid_castf)
     for stmt in exec_file:
