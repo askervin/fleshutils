@@ -68,7 +68,7 @@ Scalar functions in EXPR:
   i(field), f(field), s(field)       field value as integer, float or string.
   sw(n, value)                       sliding window, vector of n latest values.
 
-Vector functions in --select EXPR, use in conjuction with --group or sw():
+Vector functions in EXPR, use in conjuction with --group or sw():
   I(field), F(field), S(field)       field as int, float and string array.
   SUM(field), COUNT(field)           sum and number of elements in field.
   AVG(field), SD(field), VAR(field)  average, standard deviation and variance.
@@ -79,6 +79,14 @@ Vector functions in --select EXPR, use in conjuction with --group or sw():
   UNIQ(field)                        unique values in field.
   NORMALP(field)                     P value for "field normally distributed".
   TTESTP(field1, field2)             P value for T-test of field1 and field2.
+  KSTESTP(field1, field2)            P value for Kolmogorov-Smirnov two-sample
+                                     test of field1 and field2.
+
+Variables in EXPR:
+  _file                              input CSV filename.
+  _line                              number of data line in input CSV.
+  _d                                 line data in a dictionary, access to
+                                     _d["field name with spaces"].
 
 Examples:
   # Print names and ages of cats matching a --where condition
@@ -130,7 +138,7 @@ def sw_context(name, row):
         return history[:]
     return sw
 
-def query(data, fields, filt, group, exec_file=[], exec_row=[]):
+def query(data, fields, filt, group, exec_file=[], exec_row=[], query_env={}):
     if len(data) == 0:
         return []
     data_fields = set(data[0].keys())
@@ -157,6 +165,7 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
     scipy_aggr_funcs = {
         "NORMALP": lambda v0: scipy.stats.normaltest(v0)[1],
         "TTESTP": lambda v0, v1: scipy.stats.ttest_ind(v0, v1)[1],
+        "KSTESTP": lambda v0, v1: scipy.stats.ks_2samp(v0, v1)[1],
     }
     aggr_funcs.update(scipy_aggr_funcs)
     aggr_func_names = set(aggr_funcs.keys())
@@ -167,6 +176,7 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
     }
     typeid_castf = dict(aggr_funcs)
     typeid_castf.update(scalar_funcs)
+    typeid_castf.update(query_env)
     typed_data_init = {key:{} for key in typeid_castf}
     filtered_data = []
     groupid_resultindex = {}
@@ -234,7 +244,8 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[]):
     for stmt in exec_file:
         exec(stmt, env)
     for row_idx, row in enumerate(data):
-        env['row'] = row
+        env['_d'] = row
+        env['_line'] = row_idx+1
         env.update(row)
         for stmt in exec_row:
             exec(stmt, env)
@@ -401,7 +412,8 @@ if __name__ == "__main__":
             try:
                 result = query(data, fields, opt_where, opt_group,
                                exec_file=opt_exec_file,
-                               exec_row=opt_exec_row)
+                               exec_row=opt_exec_row,
+                               query_env={'_file': fname})
             except:
                 if opt_post_mortem:
                     import pdb
