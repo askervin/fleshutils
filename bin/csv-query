@@ -62,13 +62,13 @@ Options for SQL-like queries:
                                      included in output in column NAME. If only
                                      = is given without name, EXPR is the column.
                                      A field name in a select EXPR evaluates to
-                                     a vector of field's values in each group.
+                                     an array of field's values in each group.
 
 Scalar functions in EXPR:
   i(field), f(field), s(field)       field value as integer, float or string.
-  sw(n, value)                       sliding window, vector of n latest values.
+  sw(n, value)                       sliding window, array of n latest values.
 
-Vector functions in EXPR, use in conjuction with --group or sw():
+Array functions in EXPR, use in conjuction with --group or sw():
   I(field), F(field), S(field)       field as int, float and string array.
   SUM(field), COUNT(field)           sum and number of elements in field.
   AVG(field), SD(field), VAR(field)  average, standard deviation and variance.
@@ -207,7 +207,7 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[], query_env={}):
             fields[i] = field[0] # replace (name, expr) with name only
     group_id_field = None
     if sum(field_aggr) > 0 and sum(field_sw) == 0 and group is None:
-        # there are vector functions but no sliding window or grouping
+        # there are array functions but no sliding window or grouping
         # => put all rows to the same group.
         group = ("", "0")
 
