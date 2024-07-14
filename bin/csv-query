@@ -81,6 +81,7 @@ Vector functions in EXPR, use in conjuction with --group or sw():
   TTESTP(field1, field2)             P value for T-test of field1 and field2.
   KSTESTP(field1, field2)            P value for Kolmogorov-Smirnov two-sample
                                      test of field1 and field2.
+  MWUTESTP(field1, field2)           P value for Mann-Whitney U test.
 
 Variables in EXPR:
   _file                              input CSV filename.
@@ -166,6 +167,7 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[], query_env={}):
         "NORMALP": lambda v0: scipy.stats.normaltest(v0)[1],
         "TTESTP": lambda v0, v1: scipy.stats.ttest_ind(v0, v1)[1],
         "KSTESTP": lambda v0, v1: scipy.stats.ks_2samp(v0, v1)[1],
+        "MWUTESTP": lambda v0, v1: scipy.stats.mannwhitneyu(v0, v1)[1],
     }
     aggr_funcs.update(scipy_aggr_funcs)
     aggr_func_names = set(aggr_funcs.keys())
