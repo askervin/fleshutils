@@ -381,6 +381,7 @@ if __name__ == "__main__":
         if opt_select:
             data = [row for row in data_reader]
             if opt_type:
+                # format data in rows
                 for row in data:
                     for field in row:
                         try:
