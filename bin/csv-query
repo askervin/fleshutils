@@ -38,8 +38,8 @@ Options:
                                      ldx (left-align dynamic except leftmost)
                                      rd (right-align dynamic)
                                      rdx (right-align dynamic except rightmost)
-  -t, --type TYPE                    convert input field values into TYPE
-                                     ("f" for float, "i" for integer)
+  -t, --type TYPE                    convert input field values into TYPE:
+                                     "f"/"i"/"l" for float/int/list
                                      where possible. Avoids conversions in
                                      EXPRs.
   -X, --exec-file STMT               execute STMT when starting new file.
@@ -297,6 +297,12 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[], query_env={}):
 
     return result
 
+def str_to_list(s):
+    ss = s.strip()
+    if not ss.startswith("["):
+        raise ValueError("strings does not start with '['")
+    return eval(ss)
+
 if __name__ == "__main__":
     import getopt
     opt_columns = False
@@ -308,7 +314,7 @@ if __name__ == "__main__":
     opt_select = []
     opt_where = None
     opt_group = None
-    opt_type = None
+    opt_type = []
     opt_exec_file = []
     opt_exec_row = []
     opt_post_mortem = False
@@ -363,8 +369,10 @@ if __name__ == "__main__":
             opt_group = (field, expr)
         elif opt in ["-t", "--type"]:
             try:
-                opt_type = {"f": float, "float": float,
-                            "i": int, "int": int}[arg.lower()]
+                opt_type.append(
+                    {"f": float, "float": float,
+                     "i": int, "int": int,
+                     "l": str_to_list, "list": str_to_list}[arg.lower()])
             except KeyError:
                 error("invalid -t/--type '%s', expected 'f', 'i'" % (arg,))
         elif opt in ["--post-mortem"]:
@@ -397,10 +405,12 @@ if __name__ == "__main__":
                 # format data in rows
                 for row in data:
                     for field in row:
-                        try:
-                            row[field] = opt_type(row[field])
-                        except ValueError:
-                            pass
+                        for converter in opt_type:
+                            try:
+                                row[field] = converter(row[field])
+                                break
+                            except ValueError:
+                                pass
             fields = []
             for field_pattern in opt_select:
                 m = re.match('([a-zA-Z0-9_]*)=(?!=)(.*)', field_pattern)
