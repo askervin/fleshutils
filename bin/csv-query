@@ -64,6 +64,10 @@ Options for SQL-like queries:
                                      A field name in a select EXPR evaluates to
                                      an array of field's values in each group.
 
+Options for post-processing query result:
+  --columns-from field               Transform arrays in the field into
+                                     columns in a new table.
+
 Scalar functions in EXPR:
   i(field), f(field), s(field)       field value as integer, float or string.
   sw(n, value)                       sliding window, array of n latest values.
@@ -303,6 +307,34 @@ def str_to_list(s):
         raise ValueError("strings does not start with '['")
     return eval(ss)
 
+def columns_from(colspecs, fields, result):
+    field_idx = {} # {field: index in fields}
+    new_fields = []
+    new_field_idx = {} # {field: index in new_field}
+    new_result = []
+    for fidx, field in enumerate(fields):
+        field_idx[field] = fidx
+    max_row_idx = -1
+    for field in colspecs:
+        if not field in fields:
+            raise Exception("invalid field '%s'" % (field,))
+        for row_idx, row in enumerate(result):
+            new_col_data = row[field_idx[field]]
+            new_field = field + str(row_idx+1)
+            new_field_idx[new_field] = len(new_fields)
+            new_fields.append(new_field)
+            for new_row_idx, new_data in enumerate(new_col_data):
+                if len(new_result) <= new_row_idx:
+                    new_result.append([])
+                if len(new_result[new_row_idx]) < new_field_idx[new_field]:
+                    new_result[new_row_idx].extend(["" for _ in range(new_field_idx[new_field] - len(new_result[new_row_idx]))])
+                new_result[new_row_idx].append(new_data)
+        if row_idx > max_row_idx:
+            max_row_idx = row_idx
+    for new_row_idx, new_row in enumerate(new_result):
+        new_row.extend(["" for _ in range(len(new_fields) - len(new_row))])
+    return new_fields, new_result
+
 if __name__ == "__main__":
     import getopt
     opt_columns = False
@@ -317,6 +349,7 @@ if __name__ == "__main__":
     opt_type = []
     opt_exec_file = []
     opt_exec_row = []
+    opt_columns_from = []
     opt_post_mortem = False
     try:
         opts, remainder = getopt.gnu_getopt(
@@ -324,6 +357,7 @@ if __name__ == "__main__":
             ['help', 'columns', 'no-columns', 'delimiter=', 'out-delimiter=',
              'out-width=', 'type=', 'exec-file=', 'exec-row=',
              'file=', 'select=', 'where=', 'group=',
+             'columns-from=',
              'post-mortem'])
     except Exception as e:
         error(str(e))
@@ -375,6 +409,8 @@ if __name__ == "__main__":
                      "l": str_to_list, "list": str_to_list}[arg.lower()])
             except KeyError:
                 error("invalid -t/--type '%s', expected 'f', 'i'" % (arg,))
+        elif opt in ["--columns-from"]:
+            opt_columns_from.extend(arg.split(opt_delimiter))
         elif opt in ["--post-mortem"]:
             opt_post_mortem = True
         else:
@@ -433,6 +469,8 @@ if __name__ == "__main__":
                     pdb.post_mortem(tb)
                 else:
                     raise
+            if opt_columns_from:
+                fields, result = columns_from(opt_columns_from, fields, result)
             try:
                 if opt_out_width is not None:
                     if opt_out_width in ["ld", "ldx", "rd", "rdx"]:
