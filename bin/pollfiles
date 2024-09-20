@@ -35,8 +35,12 @@ Options:
   -f, --format FORMAT     output FORMAT, "csv", "json" or "metrics".
                           The default is FORMAT:
                           "%(time).3f %(file)s %(label)s %(value)s\n".
-  -s, --search [LABEL]=REGEXP print data from lines matching REGEXP
+  --file-labels           expect LABEL=FILENAMEs instead of FILEs.
+  -l, --lines REGEXP      print all lines matching REGEXP.
+  -s, --search [LABEL]=REGEXP print data from lines matching REGEXP.
   -t INTERVAL             poll time interval in seconds. The default is 1.0.
+  -d, --debug             print debug info.
+  -o, --output OUTFILE    write output to OUTFILE, the default is stdout.
 
 Examples:
   # print CPU user time with 100 ms interval from top-level cgroups
@@ -52,6 +56,7 @@ import os
 import re
 import sys
 import time
+import urllib.request
 
 g_command = "pollfiles"
 opt_format = "%(time).3f %(file)s %(label)s %(value)s\n"
@@ -64,8 +69,14 @@ def error(msg, exit_status=1):
     if exit_status != None:
         sys.exit(1)
 
+def debug(msg):
+    if opt_debug:
+        t = time.time()
+        sys.stderr.write("%s: DEBUG %.3f: %s\n" % (g_command, t, msg))
+        sys.stderr.flush()
+
 def output(msg):
-    sys.stdout.write(msg)
+    opt_output.write(msg)
 
 _csv_header_printed = False
 def output_data(datadict):
@@ -84,25 +95,61 @@ def output_data(datadict):
     else:
         output(opt_format % datadict)
 
-def output_file(filename, polldata):
+def read_file(filename):
+    if filename.startswith("http://"):
+        try:
+            data = urllib.request.urlopen(filename).read()
+        except Exception as e:
+            debug("reading '%s' failed: %s" % (filename, e))
+            return None
+    else:
+        try:
+            data = open(filename).read()
+        except Exception as e:
+            debug("reading '%s' failed: %s" % (filename, e))
+            return None
+    debug("read from '%s' (%s bytes)" % (filename, len(data)))
+    if isinstance(data, bytes):
+        data = data.decode("utf8")
+    return data
+
+def output_file(filename, filelabel, polldata):
     t = time.time()
-    try:
-        filedata = open(filename).read()
-    except:
+    filedata = read_file(filename)
+    if not filedata:
         return
     for label, regexp in polldata.get("search", []):
         for value in regexp.findall(filedata):
-            output_data({"time": t, "file": filename, "label": label, "value": value})
+            output_data({"time": t, "file": filelabel, "label": label, "value": value})
+    for label, regexp in polldata.get("lines", []):
+        for line in filedata.splitlines():
+            if regexp.match(line):
+                output_data({"time": t, "file": filelabel, "label": label, "value": line})
+
+def parse_search_arg(polldata, arg):
+    if not "=" in arg:
+        error("missing = from %r, expected --search LABEL=REGEXP" % (arg,))
+    label, regexp_text = arg.split("=", 1)
+    try:
+        regexp = re.compile(regexp_text)
+    except Exception as e:
+        error("invalid REGEXP %r: %s" % (regexp_text, e))
+    polldata["search"].append((label, regexp))
 
 if __name__ == "__main__":
     opt_files = []
+    opt_file_labels = False
+    opt_output = sys.stdout
     opt_t = 1.0
-    polldata = {"search": []}
+    opt_debug = False
+    polldata = {"search": [], "lines": []}
+    file_labels = {}
+    filenames = []
 
     try:
         opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hf:s:t:',
-            ['help', 'format=', 'search=',])
+            sys.argv[1:], 'hf:l:s:t:o:',
+            ['help', 'format=', 'file-labels', 'lines=', 'search=', 'output=', 'debug'])
     except Exception as e:
         error(e)
 
@@ -112,38 +159,61 @@ if __name__ == "__main__":
             sys.exit(0)
         elif opt in ["-f", "--format"]:
             opt_format = arg
-        elif opt in ["-s", "--search"]:
-            if not "=" in arg:
-                error("missing = from %r, expected --search LABEL=REGEXP" % (arg,))
-            label, regexp_text = arg.split("=", 1)
+        elif opt in ["-l", "--lines"]:
             try:
-                regexp = re.compile(regexp_text)
+                polldata["lines"].append(("line", re.compile(arg)))
             except Exception as e:
-                error("invalid REGEXP %r: %s" % (regexp_text, e))
-            polldata["search"].append((label, regexp))
+                error("invalid --lines=REGEXP: '%s' (%s)" % (arg, e))
+        elif opt in ["-s", "--search"]:
+            parse_search_arg(polldata, arg)
+        elif opt in ["--file-labels"]:
+            opt_file_labels = True
+        elif opt in ["-o", "--output"]:
+            try:
+                opt_output = open(arg, "w")
+            except Exception as e:
+                error("failed to open --output='%s': %s" % (arg, e))
         elif opt in ["-t"]:
             try:
                 opt_t = float(arg)
             except Exception:
                 error("invalid -t INTERVAL %r, expected float" % (arg,))
+        elif opt in ["--debug"]:
+            opt_debug = True
         else:
             error("internal error, unhandled opt=arg: %s=%s" % (opt, arg))
 
-    if not polldata["search"]:
-        error("missing --search LABEL=REGEXP, nothing to print")
+    if not polldata["search"] and not polldata["lines"]:
+        polldata["lines"].append(("", re.compile(".")))
 
     if remainder:
         opt_files = remainder
     else:
         opt_files = sys.stdin.read().splitlines()
 
-    if not opt_files:
+    for label_filename in opt_files:
+        label_filename = label_filename.strip()
+        if not label_filename:
+            continue
+        if opt_file_labels:
+            try:
+                label, filename = label_filename.strip().split("=", 1)
+            except:
+                error("missing LABEL from LABEL=FILE: '%s'" % (label_filename,))
+        else:
+            filename = label_filename
+            label = label_filename
+        debug("start polling file '%s' (label '%s')" % (filename, label))
+        filenames.append(filename)
+        file_labels[filename] = label
+
+    if not filenames:
         error("missing FILEs")
 
     last_t = time.time()
     while True:
-        for filename in opt_files:
-            output_file(filename, polldata)
+        for filename in filenames:
+            output_file(filename, file_labels[filename], polldata)
         now_t = time.time()
         diff_t = now_t - last_t
         if diff_t < opt_t:
