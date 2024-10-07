@@ -377,8 +377,10 @@ if __name__ == "__main__":
         elif opt in ["-D", "--out-delimiter"]:
             opt_out_delimiter = arg
         elif opt in ["-W", "--out-width"]:
-            if "".join(sorted(arg)) in ["d", "dl", "dlx", "dr", "drx"]:
+            if "".join(sorted(arg)) in ["d", "dl", "dlx", "dr", "drx", "l", "r"]:
                 opt_out_width = "".join(sorted(arg))
+                if opt_out_width in ["l", "r"]:
+                    opt_out_width = "d" + opt_out_width
             else:
                 opt_out_width = int(arg)
         elif opt in ["-X", "--exec-file"]:
@@ -482,7 +484,7 @@ if __name__ == "__main__":
                             for col_idx, col in enumerate(row):
                                 if len(str(col)) > col_widths[col_idx]:
                                     col_widths[col_idx] = len(str(col))
-                        if opt_out_width in ["d", "rd", "rdx"]:
+                        if opt_out_width in ["d", "dr", "drx"]:
                             align = 1
                         else:
                             align = -1
