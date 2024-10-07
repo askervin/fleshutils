@@ -28,7 +28,7 @@ r"""csv-query [options] FILE...
 
 Options:
   -h, --help
-  -c, --columns                      output only column headers (field names)
+  --columns                          output only column headers (field names)
   -C, --no-columns                   do not output column headers at all
   -d, --delimiter DELIMITER          set field separator, the default is ";"
   -D, --out-delimiter OUT_DELIMITER  set output field separator, the default
@@ -353,7 +353,7 @@ if __name__ == "__main__":
     opt_post_mortem = False
     try:
         opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hcCd:D:W:f:X:x:s:w:g:t:',
+            sys.argv[1:], 'hCd:D:W:f:X:x:s:w:g:t:',
             ['help', 'columns', 'no-columns', 'delimiter=', 'out-delimiter=',
              'out-width=', 'type=', 'exec-file=', 'exec-row=',
              'file=', 'select=', 'where=', 'group=',
@@ -365,7 +365,7 @@ if __name__ == "__main__":
         if opt in ["-h", "--help"]:
             print(__doc__)
             sys.exit(0)
-        elif opt in ["-c", "--columns"]:
+        elif opt in ["--columns"]:
             opt_columns = True
         elif opt in ["-C", "--no-columns"]:
             opt_no_columns = True
