@@ -146,7 +146,7 @@ def sw_context(name, row):
 def query(data, fields, filt, group, exec_file=[], exec_row=[], query_env={}):
     if len(data) == 0:
         return []
-    data_fields = set(data[0].keys())
+    data_fields = set([f.strip() for f in data[0].keys()])
     result = []
     aggr_funcs = {
         "F": lambda v: [float(f) for f in v],
@@ -249,7 +249,8 @@ def query(data, fields, filt, group, exec_file=[], exec_row=[], query_env={}):
     env = dict(typeid_castf)
     for stmt in exec_file:
         exec(stmt, env)
-    for row_idx, row in enumerate(data):
+    for row_idx, row_unstripped in enumerate(data):
+        row = {k.strip(): (v.strip() if isinstance(v, str) else v) for k, v in row_unstripped.items()}
         env['_d'] = row
         env['_line'] = row_idx+1
         env.update(row)
@@ -434,7 +435,8 @@ if __name__ == "__main__":
         else:
             data_reader = csv.DictReader(open(fname), delimiter=opt_delimiter)
         if opt_columns:
-            print(opt_delimiter.join(col for col in data_reader.fieldnames))
+            print(opt_delimiter.join(col.strip() for col in data_reader.fieldnames))
+            continue
         if opt_select:
             data = [row for row in data_reader]
             if opt_type:
@@ -456,7 +458,7 @@ if __name__ == "__main__":
                         field = expr
                     fields.append((field, expr))
                 else:
-                    fields.extend([f for f in data_reader.fieldnames if fnmatch.fnmatch(f, field_pattern) and f.strip()])
+                    fields.extend([f.strip() for f in data_reader.fieldnames if fnmatch.fnmatch(f.strip(), field_pattern) and f.strip()])
             try:
                 result = query(data, fields, opt_where, opt_group,
                                exec_file=opt_exec_file,
