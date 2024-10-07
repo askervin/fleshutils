@@ -376,8 +376,8 @@ if __name__ == "__main__":
         elif opt in ["-D", "--out-delimiter"]:
             opt_out_delimiter = arg
         elif opt in ["-W", "--out-width"]:
-            if arg in ["ld", "ldx", "rd", "rdx"]:
-                opt_out_width = arg
+            if "".join(sorted(arg)) in ["d", "dl", "dlx", "dr", "drx"]:
+                opt_out_width = "".join(sorted(arg))
             else:
                 opt_out_width = int(arg)
         elif opt in ["-X", "--exec-file"]:
@@ -423,7 +423,7 @@ if __name__ == "__main__":
     if len(opt_files) == 0:
         opt_files.append("-")
 
-    if opt_where is not None and len(opt_select) == 0:
+    if not opt_select:
         opt_select.append("*")
     if opt_where is None and opt_group is not None:
         opt_where = lambda: True
@@ -473,21 +473,21 @@ if __name__ == "__main__":
                 fields, result = columns_from(opt_columns_from, fields, result)
             try:
                 if opt_out_width is not None:
-                    if opt_out_width in ["ld", "ldx", "rd", "rdx"]:
+                    if opt_out_width in ["d", "dl", "dlx", "dr", "drx"]:
                         # output width per column
                         col_widths = [len(field) for field in fields]
                         for row in result:
                             for col_idx, col in enumerate(row):
                                 if len(str(col)) > col_widths[col_idx]:
                                     col_widths[col_idx] = len(str(col))
-                        if opt_out_width in ["rd", "rdx"]:
+                        if opt_out_width in ["d", "rd", "rdx"]:
                             align = 1
                         else:
                             align = -1
                         col_fmt = ["%" + str(align * (col_width+2)) + "s" for col_width in col_widths]
-                        if opt_out_width == "rdx":
+                        if opt_out_width == "drx":
                             col_fmt[-1] = "%s"
-                        if opt_out_width == "ldx":
+                        elif opt_out_width == "dlx":
                             col_fmt[0] = "%" + str(col_widths[0]+2) + "s"
                     else:
                         # common output width to all columns
