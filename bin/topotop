@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2025 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""topotop - visualize CPU usage in NUMA nodes/packages/hyperthreads
+"""
+
+import os
+import time
+import glob
+
+# listset2list parses list set syntax (like "0,4-7,63") into a list
+def listset2list(s):
+    l = []
+    if s == "":
+        return l
+    for comma in s.split(","):
+        rng = comma.split("-")
+        if len(rng) == 1:
+            l.append(int(rng[0]))
+            continue
+        for i in range(int(rng[0]), int(rng[1])+1):
+            l.append(i)
+    return l
+
+# coord2brbit maps (x, y) coordinates to offset bits in utf8/braille
+# defined for width x height: 2 x 4
+coord2brbit = [
+    [0, 1, 2, 6],
+    [3, 4, 5, 7],
+]
+
+# brbits2chr converts braille character bits to a braille character
+def brbits2chr(bits):
+    base = 10240
+    offset = 0
+    for bit in range(8):
+        if bits & (1 << bit) != 0:
+            offset += 1 << bit
+    return chr(base + offset)
+
+class Bitmap:
+    def __init__(self, width=0, height=0, data=None):
+        self._width = width
+        self._height = height
+        self._data = data
+        self._max_color = 1
+    # from_table() creates bitmap from table
+    # [[x0y0, x1y0, ...],
+    #  [x0y1, x1y1, ...],
+    #  ...]
+    def from_netpbm(self, bmdata):
+        magic, size, data = bmdata.split(b'\n', 2)
+        width = int(size.split()[0])
+        height = int(size.split()[1])
+        array = []
+        if magic == b"P1":
+            for c in data:
+                if c == b"0":
+                    array.append(0)
+                elif c == b"1":
+                    array.append(1)
+        elif magic == b"P2":
+            array.extend([int(col) for col in data.split()])
+        elif magic == b"P3":
+            max_color, data = data.split(b'\n', 1)
+            if max_color != b"255":
+                raise Exception("only 8-bit (256 shades of gray) P5 images supported, got %s" % (max_color,))
+            self._max_color=255
+            rgbdata = [int(i) for i in data.split()]
+            for i in range(width * height):
+                r, g, b = rgbdata[i*3:i*3+3]
+                array.append((r<<16) + (g<<8) + b)
+        elif magic == b"P4":
+            x = 0
+            for c in data:
+                for b in range(8):
+                    if x >= width:
+                        break
+                    x += 1
+                    array.append((c >> (7-b)) & 1)
+                if x >= width:
+                    x = 0
+            array = array[0:width*height]
+        elif magic == b"P5":
+            max_color, data = data.split(b'\n', 1)
+            if max_color != b"255":
+                raise Exception("only 8-bit (256 shades of gray) P5 images supported, got %s" % (max_color,))
+            self._max_color=255
+            array.extend(data[0:width*height])
+        elif magic == b"P6":
+            max_color, data = data.split(b'\n', 1)
+            if max_color != b"255":
+                raise Exception("only 8-bit (256 color) P6 images supported, got %s" % (max_color,))
+            self._max_color=255
+            for i in range(width * height):
+                r, g, b = data[i*3:i*3+3]
+                array.append((r<<16) + (g<<8) + b)
+        else:
+            raise Exception("invalid PBM/PGM/PNM magic, expected P1, P2, P3, P4 or P6")
+        self._max_color = max(self._max_color, max(array))
+        self.from_array(width, height, array)
+    def from_table(self, table):
+        self._data = table
+        self._height = len(self._data)
+        self._width = max([len(line) for line in self._data])
+        for row in self._data:
+            self._max_color = max(self._max_color, max(row))
+    def from_array(self, width, height, array):
+        self._width = width
+        self._height = height
+        self._data = [[] for n in range(self._height)]
+        for n, pixel in enumerate(array):
+            self._data[n // self._width].append(pixel)
+        self._max_color = max(array)
+    def set_line(self, lineno, linedata):
+        if self._data is None:
+            self._data = []
+        if lineno == -1:
+            lineno = len(self._data)
+        if lineno >= len(self._data):
+            [self._data.append([]) for n in range(lineno-len(self._data)+1)]
+        self._data[lineno] = linedata
+        if len(linedata) > self._width:
+            self._width = len(linedata)
+        self._height = len(self._data)
+        if len(linedata) > 0:
+            self._max_color = max(self._max_color, max(linedata))
+    def line(self, lineno):
+        if self._data and lineno < len(self._data):
+            return self._data[lineno]
+        return []
+    def size(self):
+        return (self._width, self._height)
+    def set_size(self, width=None, height=None):
+        if not width is None:
+            self._width = width
+        if not height is None:
+            self._height = height
+    def max_color(self):
+        return self._max_color
+    def pixel(self, x, y, default=None):
+        if y >= len(self._data) or x >= len(self._data[y]):
+            return default
+        return self._data[y][x]
+    # to_braille() converts a bitmap into a string of braille
+    # characters. If bitmap height > 4 the result will be a
+    # multiline string.
+    def to_braille(self, colormode=0):
+        width, height = self.size()
+        max_color = self.max_color()
+        if width == 0 or height == 0:
+            return ""
+        braille = []
+        for row in range((3+height)//4):
+            braille.append([])
+        for x2 in range((1+width)//2):
+            for y4 in range((3+height)//4):
+                braille_char_bits = 0
+                pixel_count = 0
+                color_sum = 0
+                if colormode == 2:
+                    color_sum = (0, 0, 0)
+                for x in range(min(2, width - x2*2)):
+                    for y in range(min(4, height - y4*4)):
+                        c = self.pixel(x2*2+x, y4*4+y, default=0)
+                        if c != 0:
+                            braille_char_bits |= 1 << coord2brbit[x][y]
+                            pixel_count += 1
+                            if colormode == 1: # grayscale
+                                color_sum += c
+                            elif colormode == 2: # 8-bit RGB
+                                r, g, b = c >> 16, c >> 8 & 255, c & 255
+                                color_sum = (color_sum[0] + b, color_sum[1] + g, color_sum[2] + r)
+                color, nocolor = "", ""
+                if colormode == 1 and pixel_count > 0 and max_color > 0:
+                    grayscale = 232 + int(15 * (color_sum / pixel_count) / max_color)
+                    color = "\x1b[38;5;%dm" % (grayscale,)
+                    nocolor = "\x1b[0m"
+                elif colormode == 2 and pixel_count > 0:
+                    r = int(color_sum[2]/pixel_count)
+                    g = int(color_sum[1]/pixel_count)
+                    b = int(color_sum[0]/pixel_count)
+                    color = "\x1b[38;2;%d;%d;%dm" % (r, g, b)
+                    nocolor = "\x1b[0m"
+                braille[y4].append(color + brbits2chr(braille_char_bits) + nocolor)
+        return '\n'.join(''.join(c for c in line) for line in braille)
+
+def cpu_usage():
+    """Read CPU usage statistics from /proc/stat"""
+    total, idle = {}, {}
+    with open("/proc/stat") as f:
+        for line in f:
+            if line.startswith("cpu") and line[3] in "0123456789":
+                fields = line.split()
+                vcpu = int(fields[0][3:])
+                values = list(map(int, fields[1:]))  # Convert to integers
+                total[vcpu] = sum(values)  # Total time
+                idle[vcpu] = values[3]  # Idle time (4th column)
+    return total, idle
+
+def add_numa_info_to_pkg(cpus):
+    nodeid = lambda s: int(s[len("/sys/devices/system/node/node"):-len("/cpulist")])
+    node_cpus = {}
+    cpu_node = {}
+    for d in glob.glob("/sys/devices/system/node/node*/cpulist"):
+        cpulist = listset2list(open(d).read())
+        for cpuid in cpulist:
+            cpu_node[cpuid] = nodeid(d)
+        node_cpus[nodeid(d)] = cpulist
+    for cpu_vec in cpus:
+        cpuid = cpu_vec[-1]
+        cpu_vec[0] = "node%s@pkg%s" % (cpu_node.get(cpuid, "?"), cpu_vec[0])
+
+if __name__ == "__main__":
+    cpus = []
+    cpu_topo = {}
+    id_files=["physical_package_id", "die_id", "cluster_id", "core_id"]
+    vcpu = lambda s: int(s[len("/sys/devices/system/cpu/cpu"):-len("/topology")])
+    def readi(path):
+        try:
+            return int(open(path).read())
+        except:
+            return 0
+    for d in glob.glob("/sys/devices/system/cpu/cpu*/topology"):
+        cpus.append([readi(d + "/" + f) for f in id_files] + [vcpu(d)])
+        cpu_topo[vcpu(d)] = cpus[-1]
+    cpus.sort()
+    total1, idle1 = cpu_usage()
+    time.sleep(1)
+    total2, idle2 = cpu_usage()
+    pkg_prev = cpus[-1][0]
+
+    try:
+        width = os.get_terminal_size().columns
+    except:
+        width = 72
+
+    add_numa_info_to_pkg(cpus)
+    pkgs = sorted(set(cpu[0] for cpu in cpus))
+    titlefmt = ""
+    for pkg in pkgs:
+        titlefmt += f"%-{width//len(pkgs)}s"
+    title = titlefmt % tuple(pkgs)
+    print(title)
+
+    bm = Bitmap()
+    max_usage = 2*int(width/len(pkgs))-4
+    line = 0
+    title = " " * (max_usage//2)
+    for topocpu in cpus:
+        pkg = topocpu[0]
+        if pkg != pkg_prev:
+            line = 0
+            pkg_prev = pkg
+        cpu = topocpu[-1]
+        usage = round(max_usage * (1-(idle2[cpu]-idle1[cpu]) / (total2[cpu]-total1[cpu])))
+        linedata = [1]*(usage) + [0]*(max_usage-usage)
+        prev_col = bm.line(line)
+        if prev_col:
+            prev_col.extend([0]*4)
+        bm.set_line(line, prev_col + linedata)
+        line += 1
+    print(bm.to_braille())
