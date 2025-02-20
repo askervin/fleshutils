@@ -25,11 +25,23 @@
 # SOFTWARE.
 
 """topotop - visualize CPU usage in NUMA nodes/packages/hyperthreads
+
+Usage: topotop [options]
+
+Options:
+  -h, --help            print help.
+  -d, --delay SECONDS   delay between updates. The default is "1.0".
 """
 
-import os
-import time
 import glob
+import os
+import sys
+import time
+
+# error prints error message and exits process
+def error(msg, exit_status=1):
+    sys.stderr.write("topotop: %s\n" % (msg,))
+    sys.exit(exit_status)
 
 # listset2list parses list set syntax (like "0,4-7,63") into a list
 def listset2list(s):
@@ -221,22 +233,8 @@ def cpu_usage():
                 idle[vcpu] = values[3]  # Idle time (4th column)
     return total, idle
 
-def add_numa_info_to_pkg(cpus):
-    nodeid = lambda s: int(s[len("/sys/devices/system/node/node"):-len("/cpulist")])
-    node_cpus = {}
-    cpu_node = {}
-    for d in glob.glob("/sys/devices/system/node/node*/cpulist"):
-        cpulist = listset2list(open(d).read())
-        for cpuid in cpulist:
-            cpu_node[cpuid] = nodeid(d)
-        node_cpus[nodeid(d)] = cpulist
-    for cpu_vec in cpus:
-        cpuid = cpu_vec[-1]
-        cpu_vec[0] = "node%s@pkg%s" % (cpu_node.get(cpuid, "?"), cpu_vec[0])
-
-if __name__ == "__main__":
+def read_topology():
     cpus = []
-    cpu_topo = {}
     id_files=["physical_package_id", "die_id", "cluster_id", "core_id"]
     vcpu = lambda s: int(s[len("/sys/devices/system/cpu/cpu"):-len("/topology")])
     def readi(path):
@@ -246,11 +244,26 @@ if __name__ == "__main__":
             return 0
     for d in glob.glob("/sys/devices/system/cpu/cpu*/topology"):
         cpus.append([readi(d + "/" + f) for f in id_files] + [vcpu(d)])
-        cpu_topo[vcpu(d)] = cpus[-1]
     cpus.sort()
-    total1, idle1 = cpu_usage()
-    time.sleep(1)
+    return cpus
+
+def add_numa_info_to_pkg(cpus):
+    nodeid = lambda s: int(s[len("/sys/devices/system/node/node"):-len("/cpulist")])
+    cpu_node = {}
+    for d in glob.glob("/sys/devices/system/node/node*/cpulist"):
+        cpulist = listset2list(open(d).read())
+        for cpuid in cpulist:
+            cpu_node[cpuid] = nodeid(d)
+    for cpu_vec in cpus:
+        cpuid = cpu_vec[-1]
+        cpu_vec[0] = "node%s@pkg%s" % (cpu_node.get(cpuid, "?"), cpu_vec[0])
+
+_cpu_load_total, _cpu_load_idle = cpu_usage()
+def print_cpu_load(cpus):
+    global _cpu_load_total, _cpu_load_idle
+    total1, idle1 = _cpu_load_total, _cpu_load_idle
     total2, idle2 = cpu_usage()
+    _cpu_load_total, _cpu_load_idle = total2, idle2
     pkg_prev = cpus[-1][0]
 
     try:
@@ -258,7 +271,6 @@ if __name__ == "__main__":
     except:
         width = 72
 
-    add_numa_info_to_pkg(cpus)
     pkgs = sorted(set(cpu[0] for cpu in cpus))
     titlefmt = ""
     for pkg in pkgs:
@@ -276,7 +288,10 @@ if __name__ == "__main__":
             line = 0
             pkg_prev = pkg
         cpu = topocpu[-1]
-        usage = round(max_usage * (1-(idle2[cpu]-idle1[cpu]) / (total2[cpu]-total1[cpu])))
+        try:
+            usage = round(max_usage * (1-(idle2[cpu]-idle1[cpu]) / (total2[cpu]-total1[cpu])))
+        except ZeroDivisionError:
+            usage = 0
         linedata = [1]*(usage) + [0]*(max_usage-usage)
         prev_col = bm.line(line)
         if prev_col:
@@ -284,3 +299,46 @@ if __name__ == "__main__":
         bm.set_line(line, prev_col + linedata)
         line += 1
     print(bm.to_braille())
+
+if __name__ == "__main__":
+    import getopt
+    opt_delay = 1.0
+
+    try:
+        opts, remainder = getopt.gnu_getopt(
+            sys.argv[1:], 'hd:',
+            ['help', 'delay='])
+    except Exception as e:
+        error(str(e))
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            sys.exit(0)
+        elif opt in ["-d", "--delay"]:
+            try:
+                opt_delay = float(arg)
+            except:
+                error("invalid delay: %s" % (arg,))
+
+    # cpus = []
+    # cpu_topo = {}
+    # id_files=["physical_package_id", "die_id", "cluster_id", "core_id"]
+    # vcpu = lambda s: int(s[len("/sys/devices/system/cpu/cpu"):-len("/topology")])
+    # def readi(path):
+    #     try:
+    #         return int(open(path).read())
+    #     except:
+    #         return 0
+    # for d in glob.glob("/sys/devices/system/cpu/cpu*/topology"):
+    #     cpus.append([readi(d + "/" + f) for f in id_files] + [vcpu(d)])
+    #     cpu_topo[vcpu(d)] = cpus[-1]
+    # cpus.sort()
+    cpus = read_topology()
+    add_numa_info_to_pkg(cpus)
+    # clear terminal
+    print("\x1b[2J", end="")
+    while True:
+        time.sleep(opt_delay)
+        # move cursor to top left
+        print("\x1b[H", end="")
+        print_cpu_load(cpus)
