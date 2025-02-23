@@ -256,6 +256,8 @@ def membw_from_pcm():
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL)
         _pcm_csv_headers.append([f.strip() for f in _pcm_process.stdout.readline().strip().split(",")])
+        if len(_pcm_csv_headers[0]) <= 4:
+            raise Exception("failed to launch pcm-memory")
         _pcm_csv_headers.append([f.strip() for f in _pcm_process.stdout.readline().strip().split(",")])
     # get latest output from pcm-memory
     h0, h1 = _pcm_csv_headers[0], _pcm_csv_headers[1]
@@ -343,58 +345,68 @@ def print_cpu_load(cpus):
     print(bm.to_braille())
 
 _width_bw = 0
-_max_read_bw, _max_write_bw, _max_bw = 0, 0, 0
-_max_sum_read_bw, _max_sum_write_bw = 0, 0
+_pkg_ch_max_read_bw, _pkg_ch_max_write_bw, _pkg_ch_max_bw = {}, {}, {}
+_pkg_max_sum_read_bw, _pkg_max_sum_write_bw = {}, {}
 def print_membw_usage(pkg, data):
-    global _width_bw, _max_read_bw, _max_write_bw
+    global _width_bw, _pkg_ch_max_read_bw, _pkg_ch_max_write_bw, _pkg_ch_max_bw
     global _max_sum_read_bw, _max_sum_write_bw
-    try:
-        width = os.get_terminal_size().columns
-    except:
-        width = 72
-    bm_width = width - 20
+    if pkg not in _pkg_ch_max_read_bw:
+        _pkg_ch_max_read_bw[pkg] = {}
+        _pkg_ch_max_write_bw[pkg] = {}
+        _pkg_ch_max_bw[pkg] = {}
+        _pkg_max_sum_read_bw[pkg] = 0
+        _pkg_max_sum_write_bw[pkg] = 0
+    _ch_max_read_bw = _pkg_ch_max_read_bw[pkg]
+    _ch_max_write_bw = _pkg_ch_max_write_bw[pkg]
+    _ch_max_bw = _pkg_ch_max_bw[pkg]
+    _max_sum_read_bw = _pkg_max_sum_read_bw[pkg]
+    _max_sum_write_bw = _pkg_max_sum_write_bw[pkg]
+    bm_width = 25*2
     lines = []
     ch_rw = {} # {channel: (readMBps, writeMBps)}
     for skt, metric, value in data:
         if skt != pkg:
             continue
         if metric.startswith("Ch"):
+            gbps = value/1000.0
             if metric.endswith("Read"):
                 ch = int(metric[len("Ch"):-len("Read")])
-                ch_rw[ch] = (value/1000.0, ch_rw.get(ch, (0, 0))[1])
+                ch_rw[ch] = (gbps, ch_rw.get(ch, (0, 0))[1])
+                if gbps > _ch_max_read_bw.get(ch, 0):
+                    _ch_max_read_bw[ch] = gbps
             elif metric.endswith("Write"):
                 ch = int(metric[len("Ch"):-len("Write")])
-                ch_rw[ch] = (ch_rw.get(ch, (0, 0))[0], value/1000.0)
+                ch_rw[ch] = (ch_rw.get(ch, (0, 0))[0], gbps)
+                if gbps > _ch_max_write_bw.get(ch, 0):
+                    _ch_max_write_bw[ch] = gbps
     max_read_bw = max(rw[0] for rw in ch_rw.values())
     sum_read_bw = sum(rw[0] for rw in ch_rw.values())
     max_write_bw = max(rw[1] for rw in ch_rw.values())
     sum_write_bw = sum(rw[1] for rw in ch_rw.values())
-    max_bw = max(max_read_bw, max_write_bw)
-    # scale max_bw to next power of 2
-    width_bw = max_bw
+    width_bw = max(max_read_bw, max_write_bw)
     if width_bw > _width_bw:
         _width_bw = width_bw
-    if max_read_bw > _max_read_bw:
-        _max_read_bw = max_read_bw
-    if max_write_bw > _max_write_bw:
-        _max_write_bw = max_write_bw
     if sum_read_bw > _max_sum_read_bw:
         _max_sum_read_bw = sum_read_bw
+        _pkg_max_sum_read_bw[pkg] = sum_read_bw
     if sum_write_bw > _max_sum_write_bw:
         _max_sum_write_bw = sum_write_bw
-    print(f"socket{pkg} Read  {sum_read_bw:6.1f} GB/s peak/Ch {_max_read_bw:6.1f} GB/s peak {_max_sum_read_bw:6.1f} GB/s")
-    print(f"socket{pkg} Write {sum_write_bw:6.1f} GB/s peak/Ch {_max_write_bw:6.1f} GB/s peak {_max_sum_write_bw:6.1f} GB/s")
+        _pkg_max_sum_write_bw[pkg] = sum_write_bw
+    print(f" skt{pkg}R {sum_read_bw:6.1f} GB/s peak {_max_sum_read_bw:6.1f} GB/s peak/ch {max(_ch_max_read_bw.values()):6.1f} GB/s")
+    print(f" skt{pkg}W {sum_write_bw:6.1f} GB/s peak {_max_sum_write_bw:6.1f} GB/s peak/ch {max(_ch_max_write_bw.values()):6.1f} GB/s")
     for ch in sorted(ch_rw.keys()):
+        if _ch_max_bw.get(ch, 0) < sum(ch_rw[ch]):
+            _ch_max_bw[ch] = sum(ch_rw[ch])
         read, write = ch_rw[ch]
         bm = Bitmap()
-        read_line = [1]*int(width * read / _width_bw) + [0]*(width-int(width * read / _width_bw))
-        read_line[int(width * _max_read_bw / _width_bw) - 1] = 1
-        write_line = [1]*int(width * write / _width_bw) + [0]*(width-int(width * write / _width_bw))
-        write_line[int(width * _max_write_bw / _width_bw) - 1] = 1
+        read_line = [1]*int(bm_width * read / _width_bw) + [0]*(bm_width-int(bm_width * read / _width_bw))
+        read_line[max(int(bm_width * _ch_max_read_bw[ch] / _width_bw)-1,0)] = 1
+        write_line = [1]*int(bm_width * write / _width_bw) + [0]*(bm_width-int(bm_width * write / _width_bw))
+        write_line[max(int(bm_width * _ch_max_write_bw[ch] / _width_bw)-1,0)] = 1
         bm.set_line(1, read_line)
-        bm.set_line(2, write_line)
+        bm.set_line(3, write_line)
 
-        lines.append(f"Ch{ch}R/W {read+write:6.1f} GB/s" + bm.to_braille())
+        lines.append(f"ch{ch}R+W {read+write:6.1f} GB/s" + bm.to_braille() + f" {_ch_max_bw[ch]:6.1f} GB/s")
     print("\n".join(lines))
 
 _cpu_load_total, _cpu_load_idle = cpu_usage()
@@ -425,9 +437,9 @@ def print_cpu_load2(cpus):
                     if prev_pkg is not None:
                         lines.append([""])
                     prev_pkg = cpu[1]
-                line0.append(f"node{cpu[0]}")
-                line1.append(f" pkg{cpu[1]}")
-                line2.append(f"core ")
+                line0.append(f" pkg{cpu[1]:2}")
+                line1.append(f"node{cpu[0]:2}")
+                line2.append(f"coreid")
             vcpu = cpu[-1]
             if total2[vcpu] == total1[vcpu]:
                 usage.append(0)
@@ -496,9 +508,8 @@ if __name__ == "__main__":
             print()
 
         print_cpu_load2(cpus)
-        print()
 
         if membw_usage and max_pkg > 0:
             for pkg in range(1, max_pkg + 1):
-                print_membw_usage(pkg, membw_usage)
                 print()
+                print_membw_usage(pkg, membw_usage)

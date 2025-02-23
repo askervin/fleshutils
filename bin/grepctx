@@ -24,7 +24,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""grepctx - grep lines with context
+r"""grepctx - grep lines with context
 
 Usage: grepctx [options] REGEXP [FILE...]
 
@@ -51,7 +51,7 @@ Options:
   --irs IRS       use IRS as input record separator instead of new line,
                   enables matching strings from multiple lines.
   --igrep         use grep/grepctx output record separator as IRS.
-                  Shorthand for --irs '\\n--\\n'.
+                  Shorthand for --irs '\n--\n'.
 
 Examples:
   # Show where variable i is assigned to
