@@ -230,9 +230,11 @@ def membw_from_pcm():
 
 _pcm_process = None
 _pcm_csv_headers = [] # expect two lines
+_pcm_prevline_timestamp = None
 def upi_from_pcm():
     global _pcm_process
     global _pcm_csv_headers
+    global _pcm_prevline_timestamp
     if _pcm_process is None:
         _pcm_process = subprocess.Popen(
             ["stdbuf", "-oL", "pcm", "-nc", "-nsys", "-csv", "%.2f" % (opt_delay,)],
@@ -248,6 +250,13 @@ def upi_from_pcm():
     # get latest output from pcm
     h0, h1 = _pcm_csv_headers[0], _pcm_csv_headers[1]
     line = _pcm_process.stdout.readline().strip()
+
+    pcm_line_timestamp = time.time()
+    pcm_line_timediff = 0
+    if _pcm_prevline_timestamp is not None:
+        pcm_line_timediff = pcm_line_timestamp - _pcm_prevline_timestamp
+    _pcm_prevline_timestamp = pcm_line_timestamp
+
     skt_upi_mbs = []
     for col, field in enumerate(line.split(",")):
         if not field:
@@ -257,10 +266,14 @@ def upi_from_pcm():
         except:
             continue
         if h0[col].startswith("SKT") and h0[col].endswith("trafficOut"):
+            if pcm_line_timediff > 0:
+                mbps = field_float / pcm_line_timediff
+            else:
+                mbps = field_float
             skt_upi_mbs.append(
                 (int(h0[col][len("SKT"):-len("trafficOut")]),
                  h1[col],
-                 field_float))
+                 mbps))
     return skt_upi_mbs
 
 def read_topology():
