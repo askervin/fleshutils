@@ -355,18 +355,24 @@ def print_membw_usage(pkg, data):
     if sum_write_bw > _max_sum_write_bw:
         _max_sum_write_bw = sum_write_bw
         _pkg_max_sum_write_bw[pkg] = sum_write_bw
-    print(f" skt{pkg}R {sum_read_bw:6.1f} GB/s peak {_max_sum_read_bw:6.1f} GB/s peak/ch {max(_ch_max_read_bw.values()):6.1f} GB/s")
-    print(f" skt{pkg}W {sum_write_bw:6.1f} GB/s peak {_max_sum_write_bw:6.1f} GB/s peak/ch {max(_ch_max_write_bw.values()):6.1f} GB/s")
+    print(f" skt{pkg}R {sum_read_bw:6.1f} GB/s peak {_max_sum_read_bw:6.1f} GB/s ch.peak {max(_ch_max_read_bw.values()):6.1f} GB/s")
+    print(f" skt{pkg}W {sum_write_bw:6.1f} GB/s peak {_max_sum_write_bw:6.1f} GB/s ch.peak {max(_ch_max_write_bw.values()):6.1f} GB/s")
     for ch in sorted(ch_rw.keys()):
         if _ch_max_bw.get(ch, 0) < sum(ch_rw[ch]):
             _ch_max_bw[ch] = sum(ch_rw[ch])
         read, write = ch_rw[ch]
         bm = Bitmap()
         read_line = [1]*int(bm_width * read / _width_bw) + [0]*(bm_width-int(bm_width * read / _width_bw))
+        read_empty = [0]*bm_width
         read_line[max(int(bm_width * _ch_max_read_bw[ch] / _width_bw)-1,0)] = 1
+        read_empty[max(int(bm_width * _ch_max_read_bw[ch] / _width_bw)-1,0)] = 1
         write_line = [1]*int(bm_width * write / _width_bw) + [0]*(bm_width-int(bm_width * write / _width_bw))
+        write_empty = [0]*bm_width
         write_line[max(int(bm_width * _ch_max_write_bw[ch] / _width_bw)-1,0)] = 1
+        write_empty[max(int(bm_width * _ch_max_write_bw[ch] / _width_bw)-1,0)] = 1
+        bm.set_line(0, read_empty)
         bm.set_line(1, read_line)
+        bm.set_line(2, write_empty)
         bm.set_line(3, write_line)
 
         lines.append(f"ch{ch}R+W {read+write:6.1f} GB/s" + bm.to_braille() + f" {_ch_max_bw[ch]:6.1f} GB/s")
@@ -374,9 +380,11 @@ def print_membw_usage(pkg, data):
 
 _upi_width_bw = 0
 _upi_max_bw = 0
-_upi_max_sum_bw = 0
-def print_upi_usage(pkg, data):
-    global _upi_width_bw, _upi_max_bw, _upi_max_sum_bw
+_upi_pkg_max_sum_bw = {}
+def print_upi_usage(pkg, data, upidir):
+    global _upi_width_bw, _upi_max_bw, _upi_pkg_max_sum_bw
+    if pkg not in _upi_pkg_max_sum_bw:
+        _upi_pkg_max_sum_bw[pkg] = 0
     upi_bw = {}
     lines = []
     for skt, metric, value in data:
@@ -393,10 +401,9 @@ def print_upi_usage(pkg, data):
     sum_bw = sum(upi_bw.values())
     if max_bw > _upi_max_bw:
         _upi_max_bw = max_bw
-    if sum_bw > _upi_max_sum_bw:
-        _upi_max_sum_bw = sum_bw
-    bm_width = 25
-    lines.append(f" skt{pkg} UPI outtr {sum_bw:6.1f} GB/s peak {_upi_max_sum_bw:6.1f} GB/s")
+    if sum_bw > _upi_pkg_max_sum_bw[pkg]:
+        _upi_pkg_max_sum_bw[pkg] = sum_bw
+    bm_width = 25*2
     upi_links = []
     bm = Bitmap()
     for upi in sorted(upi_bw.keys()):
@@ -404,12 +411,12 @@ def print_upi_usage(pkg, data):
         bw = upi_bw[upi]
         line = [1]*int(bm_width * bw / _upi_max_bw) + [0]*(bm_width-int(bm_width * bw / _upi_max_bw))
         bm.set_line(-1, line)
-        if len(upi_links) == 4:
-            lines.append(f" UPI links {','.join(str(i) for i in upi_links)}: {bm.to_braille()} peak/link {_upi_max_bw:6.1f} GB/s")
-            upi_links = []
-            bm = Bitmap()
-    if upi_links:
-        lines.append(f" UPI links {','.join(str(i) for i in upi_links)}: {bm.to_braille()} peak/link {_upi_max_bw:6.1f} GB/s")
+    bm_lines = bm.to_braille().split("\n")
+    lines.append(f"{upidir}UPI{pkg}{upidir} {sum_bw:6.1f} GB/s{bm_lines[0]} {_upi_pkg_max_sum_bw[pkg]:6.1f} GB/s")
+    bm_lines.pop(0)
+    while bm_lines:
+        lines.append(" "*18 + bm_lines[0])
+        bm_lines.pop(0)
     print("\n".join(lines))
 
 def print_cpu_load2(pkg, cpus, cpu_usage):
@@ -532,13 +539,12 @@ if __name__ == "__main__":
 
         if max_pkg > 0:
             if opt_upi:
-                print()
-                print_upi_usage(0, upi_usage)
+                print_upi_usage(0, upi_usage, "\u2193")
             for pkg in range(1, max_pkg + 1):
                 if opt_upi:
+                    print_upi_usage(pkg, upi_usage, "\u2191")
+                else:
                     print()
-                    print_upi_usage(pkg, upi_usage)
-                print()
                 print_cpu_load2(pkg, cpus, cpu_usage)
 
             if membw_usage:
