@@ -31,6 +31,8 @@ Usage: topotop [options]
 Options:
   -h, --help            print help.
   -d, --delay SECONDS   delay between updates. The default is "1.0".
+  -m, --memory          include memory bandwidth, requires "pcm-memory".
+  -u, --upi             include UPI traffic, requires "pcm".
 """
 
 import glob
@@ -84,70 +86,12 @@ class Bitmap:
     # [[x0y0, x1y0, ...],
     #  [x0y1, x1y1, ...],
     #  ...]
-    def from_netpbm(self, bmdata):
-        magic, size, data = bmdata.split(b'\n', 2)
-        width = int(size.split()[0])
-        height = int(size.split()[1])
-        array = []
-        if magic == b"P1":
-            for c in data:
-                if c == b"0":
-                    array.append(0)
-                elif c == b"1":
-                    array.append(1)
-        elif magic == b"P2":
-            array.extend([int(col) for col in data.split()])
-        elif magic == b"P3":
-            max_color, data = data.split(b'\n', 1)
-            if max_color != b"255":
-                raise Exception("only 8-bit (256 shades of gray) P5 images supported, got %s" % (max_color,))
-            self._max_color=255
-            rgbdata = [int(i) for i in data.split()]
-            for i in range(width * height):
-                r, g, b = rgbdata[i*3:i*3+3]
-                array.append((r<<16) + (g<<8) + b)
-        elif magic == b"P4":
-            x = 0
-            for c in data:
-                for b in range(8):
-                    if x >= width:
-                        break
-                    x += 1
-                    array.append((c >> (7-b)) & 1)
-                if x >= width:
-                    x = 0
-            array = array[0:width*height]
-        elif magic == b"P5":
-            max_color, data = data.split(b'\n', 1)
-            if max_color != b"255":
-                raise Exception("only 8-bit (256 shades of gray) P5 images supported, got %s" % (max_color,))
-            self._max_color=255
-            array.extend(data[0:width*height])
-        elif magic == b"P6":
-            max_color, data = data.split(b'\n', 1)
-            if max_color != b"255":
-                raise Exception("only 8-bit (256 color) P6 images supported, got %s" % (max_color,))
-            self._max_color=255
-            for i in range(width * height):
-                r, g, b = data[i*3:i*3+3]
-                array.append((r<<16) + (g<<8) + b)
-        else:
-            raise Exception("invalid PBM/PGM/PNM magic, expected P1, P2, P3, P4 or P6")
-        self._max_color = max(self._max_color, max(array))
-        self.from_array(width, height, array)
     def from_table(self, table):
         self._data = table
         self._height = len(self._data)
         self._width = max([len(line) for line in self._data])
         for row in self._data:
             self._max_color = max(self._max_color, max(row))
-    def from_array(self, width, height, array):
-        self._width = width
-        self._height = height
-        self._data = [[] for n in range(self._height)]
-        for n, pixel in enumerate(array):
-            self._data[n // self._width].append(pixel)
-        self._max_color = max(array)
     def set_line(self, lineno, linedata):
         if self._data is None:
             self._data = []
@@ -176,11 +120,6 @@ class Bitmap:
         return []
     def size(self):
         return (self._width, self._height)
-    def set_size(self, width=None, height=None):
-        if not width is None:
-            self._width = width
-        if not height is None:
-            self._height = height
     def max_color(self):
         return self._max_color
     def pixel(self, x, y, default=None):
@@ -230,38 +169,50 @@ class Bitmap:
                 braille[y4].append(color + brbits2chr(braille_char_bits) + nocolor)
         return '\n'.join(''.join(c for c in line) for line in braille)
 
-def cpu_usage():
+_cpu_load_total, _cpu_load_idle = {}, {}
+def cpu_usage_from_proc():
     """Read CPU usage statistics from /proc/stat"""
-    total, idle = {}, {}
+    global _cpu_load_total, _cpu_load_idle
+    total1, idle1 = _cpu_load_total, _cpu_load_idle
+
+    total2, idle2 = {}, {}
     with open("/proc/stat") as f:
         for line in f:
             if line.startswith("cpu") and line[3] in "0123456789":
                 fields = line.split()
                 vcpu = int(fields[0][3:])
                 values = list(map(int, fields[1:]))  # Convert to integers
-                total[vcpu] = sum(values)  # Total time
-                idle[vcpu] = values[3]  # Idle time (4th column)
-    return total, idle
+                total2[vcpu] = sum(values)  # Total time
+                idle2[vcpu] = values[3]  # Idle time (4th column)
+    _cpu_load_total, _cpu_load_idle = total2, idle2
+    usage = {}
+    for vcpu in total1:
+        try:
+            usage[vcpu] = 1-((idle2[vcpu]-idle1[vcpu]) / (total2[vcpu]-total1[vcpu]))
+        except:
+            usage[vcpu] = 0
+    return usage
 
-_pcm_process = None
-_pcm_csv_headers = [] # expect two lines
+_pcm_memory_process = None
+_pcm_memory_csv_headers = [] # expect two lines
 def membw_from_pcm():
-    global _pcm_process
-    global _pcm_csv_headers
-    if _pcm_process is None:
-        _pcm_process = subprocess.Popen(
+    global _pcm_memory_process
+    global _pcm_memory_csv_headers
+    if _pcm_memory_process is None:
+        _pcm_memory_process = subprocess.Popen(
             ["stdbuf", "-oL", "pcm-memory", "-csv", "%.2f" % (opt_delay,)],
             bufsize=1,
             universal_newlines=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL)
-        _pcm_csv_headers.append([f.strip() for f in _pcm_process.stdout.readline().strip().split(",")])
-        if len(_pcm_csv_headers[0]) <= 4:
+        _pcm_memory_csv_headers.append([f.strip() for f in _pcm_memory_process.stdout.readline().strip().split(",")])
+        if len(_pcm_memory_csv_headers[0]) <= 4:
             raise Exception("failed to launch pcm-memory")
-        _pcm_csv_headers.append([f.strip() for f in _pcm_process.stdout.readline().strip().split(",")])
+        _pcm_memory_csv_headers.append([f.strip() for f in _pcm_memory_process.stdout.readline().strip().split(",")])
+        return []
     # get latest output from pcm-memory
-    h0, h1 = _pcm_csv_headers[0], _pcm_csv_headers[1]
-    line = _pcm_process.stdout.readline().strip()
+    h0, h1 = _pcm_memory_csv_headers[0], _pcm_memory_csv_headers[1]
+    line = _pcm_memory_process.stdout.readline().strip()
     skt_chn_mbs = []
     for col, field in enumerate(line.split(",")):
         if not field:
@@ -276,6 +227,41 @@ def membw_from_pcm():
                  h1[col],
                  field_float))
     return skt_chn_mbs
+
+_pcm_process = None
+_pcm_csv_headers = [] # expect two lines
+def upi_from_pcm():
+    global _pcm_process
+    global _pcm_csv_headers
+    if _pcm_process is None:
+        _pcm_process = subprocess.Popen(
+            ["stdbuf", "-oL", "pcm", "-nc", "-nsys", "-csv", "%.2f" % (opt_delay,)],
+            bufsize=1,
+            universal_newlines=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL)
+        _pcm_csv_headers.append([f.strip() for f in _pcm_process.stdout.readline().strip().split(",")])
+        if len(_pcm_csv_headers[0]) <= 4:
+            raise Exception("failed to launch pcm")
+        _pcm_csv_headers.append([f.strip() for f in _pcm_process.stdout.readline().strip().split(",")])
+        return []
+    # get latest output from pcm
+    h0, h1 = _pcm_csv_headers[0], _pcm_csv_headers[1]
+    line = _pcm_process.stdout.readline().strip()
+    skt_upi_mbs = []
+    for col, field in enumerate(line.split(",")):
+        if not field:
+            continue
+        try:
+            field_float = float(field.strip())
+        except:
+            continue
+        if h0[col].startswith("SKT") and h0[col].endswith("trafficOut"):
+            skt_upi_mbs.append(
+                (int(h0[col][len("SKT"):-len("trafficOut")]),
+                 h1[col],
+                 field_float))
+    return skt_upi_mbs
 
 def read_topology():
     cpus = []
@@ -301,48 +287,6 @@ def add_numa_info_to_pkg(cpus):
     for cpu_vec in cpus:
         cpuid = cpu_vec[-1]
         cpu_vec[0:0] = [cpu_node.get(cpuid, "?")] # add NUMA node id to beginning
-
-_cpu_load_total, _cpu_load_idle = cpu_usage()
-def print_cpu_load(cpus):
-    global _cpu_load_total, _cpu_load_idle
-    total1, idle1 = _cpu_load_total, _cpu_load_idle
-    total2, idle2 = cpu_usage()
-    _cpu_load_total, _cpu_load_idle = total2, idle2
-
-    try:
-        width = os.get_terminal_size().columns
-    except:
-        width = 72
-
-    pkgs = sorted(set("node%s@pkg%s" % (cpu[0], cpu[1]) for cpu in cpus))
-    titlefmt = ""
-    for pkg in pkgs:
-        titlefmt += f"%-{width//len(pkgs)}s"
-    title = titlefmt % tuple(pkgs)
-    print(title)
-
-    bm = Bitmap()
-    max_usage = 2*int(width/len(pkgs))-4
-    line = 0
-    title = " " * (max_usage//2)
-    pkg_prev = cpus[-1][0]
-    for topocpu in cpus:
-        pkg = topocpu[0]
-        if pkg != pkg_prev:
-            line = 0
-            pkg_prev = pkg
-        cpu = topocpu[-1]
-        try:
-            usage = round(max_usage * (1-(idle2[cpu]-idle1[cpu]) / (total2[cpu]-total1[cpu])))
-        except ZeroDivisionError:
-            usage = 0
-        linedata = [1]*(usage) + [0]*(max_usage-usage)
-        prev_col = bm.line(line)
-        if prev_col:
-            prev_col.extend([0]*4)
-        bm.set_line(line, prev_col + linedata)
-        line += 1
-    print(bm.to_braille())
 
 _width_bw = 0
 _pkg_ch_max_read_bw, _pkg_ch_max_write_bw, _pkg_ch_max_bw = {}, {}, {}
@@ -370,12 +314,18 @@ def print_membw_usage(pkg, data):
         if metric.startswith("Ch"):
             gbps = value/1000.0
             if metric.endswith("Read"):
-                ch = int(metric[len("Ch"):-len("Read")])
+                try:
+                    ch = int(metric[len("Ch"):-len("Read")])
+                except:
+                    continue
                 ch_rw[ch] = (gbps, ch_rw.get(ch, (0, 0))[1])
                 if gbps > _ch_max_read_bw.get(ch, 0):
                     _ch_max_read_bw[ch] = gbps
             elif metric.endswith("Write"):
-                ch = int(metric[len("Ch"):-len("Write")])
+                try:
+                    ch = int(metric[len("Ch"):-len("Write")])
+                except:
+                    continue
                 ch_rw[ch] = (ch_rw.get(ch, (0, 0))[0], gbps)
                 if gbps > _ch_max_write_bw.get(ch, 0):
                     _ch_max_write_bw[ch] = gbps
@@ -409,19 +359,53 @@ def print_membw_usage(pkg, data):
         lines.append(f"ch{ch}R+W {read+write:6.1f} GB/s" + bm.to_braille() + f" {_ch_max_bw[ch]:6.1f} GB/s")
     print("\n".join(lines))
 
-_cpu_load_total, _cpu_load_idle = cpu_usage()
-def print_cpu_load2(cpus):
-    global _cpu_load_total, _cpu_load_idle
-    total1, idle1 = _cpu_load_total, _cpu_load_idle
-    total2, idle2 = cpu_usage()
-    _cpu_load_total, _cpu_load_idle = total2, idle2
+_upi_width_bw = 0
+_upi_max_bw = 0
+_upi_max_sum_bw = 0
+def print_upi_usage(pkg, data):
+    global _upi_width_bw, _upi_max_bw, _upi_max_sum_bw
+    upi_bw = {}
+    lines = []
+    for skt, metric, value in data:
+        if skt != pkg:
+            continue
+        if metric.startswith("UPI"):
+            gbps = value/1000.0
+            try:
+                upi = int(metric[len("UPI"):])
+            except:
+                continue
+            upi_bw[upi] = gbps
+    max_bw = max(upi_bw.values())
+    sum_bw = sum(upi_bw.values())
+    if max_bw > _upi_max_bw:
+        _upi_max_bw = max_bw
+    if sum_bw > _upi_max_sum_bw:
+        _upi_max_sum_bw = sum_bw
+    bm_width = 25
+    lines.append(f" skt{pkg} UPI outtr {sum_bw:6.1f} GB/s peak {_upi_max_sum_bw:6.1f} GB/s")
+    upi_links = []
+    bm = Bitmap()
+    for upi in sorted(upi_bw.keys()):
+        upi_links.append(upi)
+        bw = upi_bw[upi]
+        line = [1]*int(bm_width * bw / _upi_max_bw) + [0]*(bm_width-int(bm_width * bw / _upi_max_bw))
+        bm.set_line(-1, line)
+        if len(upi_links) == 4:
+            lines.append(f" UPI links {','.join(str(i) for i in upi_links)}: {bm.to_braille()} peak/link {_upi_max_bw:6.1f} GB/s")
+            upi_links = []
+            bm = Bitmap()
+    if upi_links:
+        lines.append(f" UPI links {','.join(str(i) for i in upi_links)}: {bm.to_braille()} peak/link {_upi_max_bw:6.1f} GB/s")
+    print("\n".join(lines))
 
+def print_cpu_load2(pkg, cpus, cpu_usage):
     try:
         width = os.get_terminal_size().columns
     except:
         width = 72
 
-    height_pts = 8 # braille characters
+    height_pts = 8 # resolution in braille points
     lines = []
     prev_pkg = None
     for node in sorted(set([cpu[0] for cpu in cpus])):
@@ -430,7 +414,7 @@ def print_cpu_load2(cpus):
         line2 = []
         usage = []
         for cpu in cpus:
-            if cpu[0] != node:
+            if cpu[0] != node or cpu[1] != pkg:
                 continue
             if not line0:
                 if cpu[1] != prev_pkg:
@@ -441,10 +425,7 @@ def print_cpu_load2(cpus):
                 line1.append(f"node{cpu[0]:2}")
                 line2.append(f"coreid")
             vcpu = cpu[-1]
-            if total2[vcpu] == total1[vcpu]:
-                usage.append(0)
-            else:
-                usage.append(round(height_pts * (1-(idle2[vcpu]-idle1[vcpu]) / (total2[vcpu]-total1[vcpu]))))
+            usage.append(round(height_pts * cpu_usage[vcpu]))
             if len(usage) == 2:
                 bm = Bitmap()
                 for u in usage:
@@ -462,19 +443,22 @@ def print_cpu_load2(cpus):
                 line1.append(bgon + (s.split("\n")[1]) + " " + bgoff)
                 line2.append(bgon + (" " + str(cpu[-2]))[-2:] + bgoff)
                 usage = []
-        lines.append(line0)
-        lines.append(line1)
-        lines.append(line2)
+        if line0:
+            lines.append(line0)
+            lines.append(line1)
+            lines.append(line2)
     print("\n".join("".join(line) for line in lines))
 
 if __name__ == "__main__":
     import getopt
     opt_delay = 1.0
+    opt_memory = False
+    opt_upi = False
 
     try:
         opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hd:',
-            ['help', 'delay='])
+            sys.argv[1:], 'hd:mu',
+            ['help', 'delay=', 'memory', 'upi'])
     except Exception as e:
         error(str(e))
     for opt, arg in opts:
@@ -486,30 +470,65 @@ if __name__ == "__main__":
                 opt_delay = float(arg)
             except:
                 error("invalid delay: %s" % (arg,))
+        elif opt in ["-m", "--memory"]:
+            opt_memory = True
+        elif opt in ["-u", "--upi"]:
+            opt_upi = True
+        else:
+            error("unknown option: %s" % (opt,))
 
     cpus = read_topology()
     add_numa_info_to_pkg(cpus)
     max_pkg = max([cpu[1] for cpu in cpus])
-    print("starting pcm-memory")
-    try:
-        membw_from_pcm()
-    except Exception as err:
-        print("skip memory bandwidth: %s" % (err,))
+    membw_usage, upi_usage = None, None
+    cpu_usage_from_proc() # read initial values
+
+    if opt_upi:
+        print("starting pcm")
+        try:
+            upi_from_pcm()
+        except Exception as err:
+            error("cannot run pcm to show -u/--upi data: %s" % (err,))
+
+    if opt_memory:
+        print("starting pcm-memory")
+        try:
+            membw_from_pcm()
+        except Exception as err:
+            error("cannot run pcm-memory to show -m/--memory data: %s" % (err,))
+    else:
         membw_from_pcm = lambda: time.sleep(opt_delay)
 
     # clear terminal
     print("\x1b[2J", end="")
     while True:
         membw_usage = membw_from_pcm()
+        if opt_upi:
+            upi_usage = upi_from_pcm()
+
         # move cursor to top left
         print("\x1b[H", end="")
-        if membw_usage:
+
+        if opt_memory:
             print_membw_usage(0, membw_usage)
             print()
 
-        print_cpu_load2(cpus)
+        cpu_usage = cpu_usage_from_proc()
 
-        if membw_usage and max_pkg > 0:
-            for pkg in range(1, max_pkg + 1):
+        print_cpu_load2(0, cpus, cpu_usage)
+
+        if max_pkg > 0:
+            if opt_upi:
                 print()
-                print_membw_usage(pkg, membw_usage)
+                print_upi_usage(0, upi_usage)
+            for pkg in range(1, max_pkg + 1):
+                if opt_upi:
+                    print()
+                    print_upi_usage(pkg, upi_usage)
+                print()
+                print_cpu_load2(pkg, cpus, cpu_usage)
+
+            if membw_usage:
+                for pkg in range(1, max_pkg + 1):
+                    print()
+                    print_membw_usage(pkg, membw_usage)
