@@ -497,8 +497,7 @@ def print_cpu_load2(pkg, cpus, cpu_usage):
                     coldata =  [0]*(height_pts-u) + [1]*u
                     bm.add_col(coldata)
                 s = bm.to_braille()
-                if cpu[-2] % 10 == 0:
-                    # set foreground gray on every 10th core
+                if cpu[-2] % 4 == 0:
                     bgon = "\x1b[48;5;14m"
                     bgoff = "\x1b[0m"
                 else:
