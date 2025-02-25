@@ -226,6 +226,11 @@ def membw_from_pcm():
                 (int(h0[col][len("SKT"):]),
                  h1[col],
                  field_float))
+        elif h0[col].startswith("System"):
+            skt_chn_mbs.append(
+                (-1,
+                 h1[col],
+                 field_float))
     return skt_chn_mbs
 
 _pcm_process = None
@@ -419,6 +424,45 @@ def print_upi_usage(pkg, data, upidir):
         bm_lines.pop(0)
     print("\n".join(lines))
 
+_max_sys_bw = 0
+_max_sys_rbw = 0
+_max_sys_wbw = 0
+def print_sysmbw_usage(data):
+    global _max_sys_bw, _max_sys_rbw, _max_sys_wbw
+    skt_ch_bw = {}
+    rgbps, wgbps = 0, 0
+    for skt, metric, value in data:
+        if skt == -1:
+            if metric == "Read":
+                rgbps = value/1000.0
+            elif metric == "Write":
+                wgbps = value/1000.0
+    gbps = rgbps + wgbps
+    if gbps > _max_sys_bw:
+        _max_sys_bw = gbps
+    if rgbps > _max_sys_rbw:
+        _max_sys_rbw = rgbps
+    if wgbps > _max_sys_wbw:
+        _max_sys_wbw = wgbps
+    max_bw = max(_max_sys_rbw, _max_sys_wbw)
+    bm_width = 25*2
+    bm = Bitmap()
+    read_max_idx = max(int(bm_width * _max_sys_rbw / max_bw)-1,0)
+    read_empty = [0]*bm_width
+    read_bar = [1]*int(bm_width * rgbps / max_bw) + [0]*(bm_width-int(bm_width * rgbps / max_bw))
+    read_empty[read_max_idx] = 1
+    read_bar[read_max_idx] = 1
+    write_max_idx = max(int(bm_width * _max_sys_wbw / max_bw)-1,0)
+    write_empty = [0]*bm_width
+    write_bar = [1]*int(bm_width * wgbps / max_bw) + [0]*(bm_width-int(bm_width * wgbps / max_bw))
+    write_empty[write_max_idx] = 1
+    write_bar[write_max_idx] = 1
+    bm.set_line(-1, read_empty)
+    bm.set_line(-1, read_bar)
+    bm.set_line(-1, write_empty)
+    bm.set_line(-1, write_bar)
+    print(f"sysR+W {rgbps+wgbps:6.1f} GB/s{bm.to_braille()} {_max_sys_bw:6.1f} GB/s")
+
 def print_cpu_load2(pkg, cpus, cpu_usage):
     try:
         width = os.get_terminal_size().columns
@@ -448,6 +492,7 @@ def print_cpu_load2(pkg, cpus, cpu_usage):
             usage.append(round(height_pts * cpu_usage[vcpu]))
             if len(usage) == 2:
                 bm = Bitmap()
+                bm.add_col([0]*height_pts)
                 for u in usage:
                     coldata =  [0]*(height_pts-u) + [1]*u
                     bm.add_col(coldata)
@@ -459,8 +504,8 @@ def print_cpu_load2(pkg, cpus, cpu_usage):
                 else:
                     bgon = ""
                     bgoff = ""
-                line0.append(bgon + (s.split("\n")[0]) + " " + bgoff)
-                line1.append(bgon + (s.split("\n")[1]) + " " + bgoff)
+                line0.append(bgon + (s.split("\n")[0]) + bgoff)
+                line1.append(bgon + (s.split("\n")[1]) + bgoff)
                 line2.append(bgon + (" " + str(cpu[-2]))[-2:] + bgoff)
                 usage = []
         if line0:
@@ -516,6 +561,12 @@ if __name__ == "__main__":
             membw_from_pcm()
         except Exception as err:
             error("cannot run pcm-memory to show -m/--memory data: %s" % (err,))
+        if opt_upi:
+            print("sync pcm and pcm-memory")
+            # read already printed lines from pcm output
+            _start, _end = 0, 0
+            while _end - _start < opt_delay/10:
+                _start, _, _end = time.time(), upi_from_pcm(), time.time()
     else:
         membw_from_pcm = lambda: time.sleep(opt_delay)
 
@@ -541,13 +592,15 @@ if __name__ == "__main__":
             if opt_upi:
                 print_upi_usage(0, upi_usage, "\u2193")
             for pkg in range(1, max_pkg + 1):
+                print()
                 if opt_upi:
                     print_upi_usage(pkg, upi_usage, "\u2191")
-                else:
-                    print()
                 print_cpu_load2(pkg, cpus, cpu_usage)
 
             if membw_usage:
                 for pkg in range(1, max_pkg + 1):
                     print()
                     print_membw_usage(pkg, membw_usage)
+        if membw_usage:
+            print()
+            print_sysmbw_usage(membw_usage)
