@@ -1,0 +1,30 @@
+#!/bin/bash
+
+govm_ssh_hosts_config=~/.ssh/config.d/govm-ssh-hosts
+
+username_cmd='grep -o -E "fedora|ubuntu|debian|opensuse"'
+
+error() {
+    echo "$*" >&2
+    exit 1
+}
+
+[[ -d $(dirname "$govm_ssh_hosts_config") ]] || {
+    error "Directory for $govm_ssh_hosts_config does not exist. Make sure to add Include for it in .ssh/config, too."
+}
+
+echo -n "" > "$govm_ssh_hosts_config"
+
+govm ls | while read id name namespace ip _; do
+    if [[ "$id" == "ID" ]]; then
+        continue
+    fi
+    echo "Host $name" >> "$govm_ssh_hosts_config"
+    echo "    Hostname $ip" >> "$govm_ssh_hosts_config"
+    if [[ -n "$username_cmd" ]]; then
+        username=$(echo "$name $namespace" | eval $username_cmd)
+        if [[ -n "$username" ]]; then
+            echo "User $username" >> "$govm_ssh_hosts_config"
+        fi
+    fi
+done
