@@ -1,0 +1,3 @@
+#!/usr/bin/jq -rf
+paths(scalars) as $p
+| "\($p | map(if type == "string" then "." + . else "[" + tostring + "]" end) | join("")): \(getpath($p))"
