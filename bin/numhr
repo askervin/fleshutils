@@ -50,6 +50,7 @@ Options:
                           The default is to convert aggressively numbers
                           separated by many punctuation characters. Sometimes
                           this may be undesired, like in "file-2019-09.txt".
+  -r, --reverse           rewrite human-readable values without k, M, G...
   --force                 always print human readable number. The default is
                           to print only if it is shorter than the original.
 
@@ -69,12 +70,31 @@ opt_format = "%(k1000).0f%(k)s"
 opt_input_factor = None
 opt_align = "N"
 opt_force = False
+opt_reverse = False
 opt_whitespace = False
 
 prefix = {
     "k": [""] + list("kMGTPEZY"),
     "Ki": ["", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi", "Yi"],
     "e": [""] + [str(i) for i in range(1, 64)]
+}
+
+epsilon = 1e-6
+
+prefix_multipliers = {
+    "n": 1e-9,
+    "u": 1e-6,
+    "m": 1e-3,
+    "c": 1e-2,
+    "k": int(1e3),
+    "K": int(1e3),
+    "M": int(1e6),
+    "G": int(1e9),
+    "T": int(1e12),
+    "P": int(1e15),
+    "E": int(1e18),
+    "Z": int(1e21),
+    "Y": int(1e24),
 }
 
 g_command = "hr"
@@ -85,6 +105,17 @@ def error(msg, exit_status=1):
         sys.stderr.write("%s: %s\n" % (g_command, msg))
     if exit_status != None:
         sys.exit(1)
+
+def machine_readable_s(value, metric_prefix):
+    try:
+        n = value * prefix_multipliers[metric_prefix]
+    except KeyError:
+        return str(value) + f" <missing multiplier of '{metric_prefix}'>"
+    if type(n) == int:
+        return str(n)
+    if abs(n - round(n)) < epsilon:
+        return str(int(n))
+    return str(n)
 
 def human_readable_s(value):
     orig_value = str(value)
@@ -144,6 +175,13 @@ def main():
         r'(?P<presep>' + sep + r')'
         r'(?P<num>(-)?(([1-9][0-9]*(\.[0-9]+)?)|(0(\.[0-9]+)?)))'
         r'(?P<postsep>' + sep + r')')
+    hrnum = re.compile(
+        r'(?P<presep>' + sep + r')'
+        r'(?P<num>(-)?(([1-9][0-9]*(\.[0-9]+)?)|(0(\.[0-9]+)?)))'
+        r'(?P<mul>([numckKMGTPEZY]))'
+        r'(?P<postsep>' + (sep + '|[^0-9]') + r')')
+    if opt_reverse:
+        num = hrnum
     line = sys.stdin.readline()
     while line:
         new_line = []
@@ -155,9 +193,13 @@ def main():
             new_line.append(mdict['presep'])
             if (not opt_columns or (column_index+1) in opt_columns):
                 try:
-                    hr_num = human_readable_s(int(mdict['num']))
+                    parsed_num = int(mdict['num'])
                 except ValueError:
-                    hr_num = human_readable_s(float(mdict['num']))
+                    parsed_num = float(mdict['num'])
+                if not opt_reverse:
+                    hr_num = human_readable_s(parsed_num)
+                else:
+                    hr_num = machine_readable_s(parsed_num, mdict['mul'])
                 new_line.append(hr_num)
             else:
                 new_line.append(mdict['num'])
@@ -173,8 +215,8 @@ if __name__ == "__main__":
     try:
         opts, remainder = getopt.gnu_getopt(
             sys.argv[1:],
-            'hA:a:c:F:f:i:B:b:D:d:E:e:w',
-            ['help', 'align=', 'column=', 'format=', 'force',
+            'hA:a:c:F:f:i:B:b:D:d:E:e:rw',
+            ['help', 'align=', 'column=', 'format=', 'force', 'reverse',
              'whitespace'])
     except getopt.GetoptError as e:
         error(str(e))
@@ -213,6 +255,8 @@ if __name__ == "__main__":
             opt_format = arg
         elif opt in ["--force"]:
             opt_force = True
+        elif opt in ["-r", "--reverse"]:
+            opt_reverse = True
         elif opt in ["-i"]:
             try:
                 opt_input_factor = float(arg)
