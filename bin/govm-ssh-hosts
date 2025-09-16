@@ -16,7 +16,7 @@ error() {
 echo -n "" > "$govm_ssh_hosts_config"
 
 govm ls | while read id name namespace ip _; do
-    if [[ "$id" == "ID" ]]; then
+    if [[ "$id" == "ID" ]] || [[ -z "$ip" ]]; then
         continue
     fi
     echo "Host $name" >> "$govm_ssh_hosts_config"
@@ -24,7 +24,7 @@ govm ls | while read id name namespace ip _; do
     if [[ -n "$username_cmd" ]]; then
         username=$(echo "$name $namespace" | eval $username_cmd)
         if [[ -n "$username" ]]; then
-            echo "User $username" >> "$govm_ssh_hosts_config"
+            echo "    User $username" >> "$govm_ssh_hosts_config"
         fi
     fi
 done
