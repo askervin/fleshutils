@@ -190,7 +190,7 @@ void out(const char* fmt, ...) {
 int add_f(const char* fname, const char* s) {
     char *fpath = _last_fpath;
     _last_f += 1;
-    sprintf(fpath, "%s/f%d-%s", ic_workdir, _last_f, fname);
+    sprintf(fpath, "%s/f%04d-%s", ic_workdir, _last_f, fname);
     FILE *f = fopen(fpath, "w");
     if (f == NULL) {
         perror(fpath);
