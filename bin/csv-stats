@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2025 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+r"""csv-stats [options] command FILE...
+
+Search data in FILE where data is formatted in a table:
+
+result  param0  param1 ... paramn
+    r0  p0val0  p1val0 ... pnval0
+    r1  p0val1  p1val1 ... pnval1
+   ...
+
+Options:
+  -h, --help
+  -d, --delimiter DELIMITER          set field separator, the default is ";".
+
+  --print-all                        print all searched elements.
+  --print-improving                  print searched elements that improve
+                                     the best result so far.
+
+  --search-pcombs-for RESULTS        search for parameter and parameter value
+                                     combinations that explain results in
+                                     given RESULTS. RESULTS can be given as
+                                     a range: MIN-MAX or as a single value: VAL.
+
+"""
+
+import csv
+import getopt
+import sys
+import itertools
+
+# error prints error message and exits process
+def error(msg, exit_status=1):
+    if msg:
+        sys.stderr.write("csv-query: %s\n" % (msg,))
+    if exit_status is not None:
+        sys.exit(exit_status)
+
+def dump(params, data):
+    # print header
+    print("result", *params, sep=";")
+    for row in data:
+        print(*row, sep=";")
+
+def parse_result_range(results):
+    if "-" in results:
+        parts = results.split("-", 1)
+        try:
+            rmin = opt_datatype(parts[0])
+            rmax = opt_datatype(parts[1])
+        except Exception:
+            error("invalid result range '%s'" % (results,))
+        if rmin > rmax:
+            error("invalid result range '%s'" % (results,))
+        return (rmin, rmax)
+    else:
+        try:
+            rval = opt_datatype(results)
+        except Exception:
+            error("invalid result value '%s'" % (results,))
+        return (rval, rval)
+
+def search_pcombs_for(data_reader, results):
+    (rmin, rmax) = parse_result_range(results)
+    # params is a list of parameter names
+    params = data_reader.fieldnames[1:]
+    print("Detected data table: result column %s, parameters: %s" % (data_reader.fieldnames[0], ", ".join(params)))
+    # data contains all rows data in a numeric format
+    data = [[opt_datatype(row[f]) for f in data_reader.fieldnames] for row in data_reader]
+    # sort data so that rows with result in the given range come first
+    data.sort(key=lambda row: (row[0] < rmin or row[0] > rmax, row[0]))
+
+    last_row_within_range = -1
+    for row_index, row in enumerate(data):
+        if rmin <= row[0] <= rmax:
+            last_row_within_range = row_index
+        else:
+            break
+
+    # param_values[param_index] = {value0: datarows_with_value0, ...}
+    param_values = [{} for _ in params]
+    param_values_in_range = [{} for _ in params]
+    for row_index, row in enumerate(data):
+        for param_index in range(len(params)):
+            pval = row[param_index + 1]
+            rowset = param_values[param_index].get(pval, None)
+            if rowset is not None:
+                rowset.add(row_index)
+            else:
+                param_values[param_index][pval] = {row_index}
+            if row_index == last_row_within_range:
+                # Make a deep copy of param_values to param_values_in_range
+                param_values_in_range[param_index] = {}
+                for v, rset in param_values[param_index].items():
+                    param_values_in_range[param_index][v] = set(rset)
+    if last_row_within_range == -1:
+        print("No results within range [%s-%s], going through all parameter values to find a combination with smallest error" % (rmin, rmax))
+        for param_index in range(len(params)):
+            param_values_in_range[param_index] = param_values[param_index]
+
+    # Find parameter combinations that explain results in the given range.
+    # First go through single parameters, then pairs, etc.
+    pcomb_paramcount = 1
+    print("score: ")
+    print("1. portion of rows outside range, 0.0 is best")
+    print("2. average of squared errors outside range results, lower is better")
+    print("3. parameter count, lower is better")
+    print("4. squared error from minimum result, lower is better if lower results are better")
+    print("5. squared error from maximum result, lower is better if higher results are better")
+    print()
+    best_score = None
+    best_comb = None
+    for pcomb_paramcount in range(1, len(params) + 1):
+        for pcomb in itertools.combinations(range(len(params)), pcomb_paramcount):
+            comb_params_within_range = set()
+            pcomb_values_to_search = [param_values_in_range[i].keys() for i in pcomb]
+            for pcomb_value in itertools.product(*pcomb_values_to_search):
+                rows_with_param_value_comb = None
+                for pi in range(len(pcomb)):
+                    param_index = pcomb[pi]
+                    param_val = pcomb_value[pi]
+                    rows_with_param_value = param_values[param_index][param_val]
+                    if rows_with_param_value_comb is None:
+                        rows_with_param_value_comb = set(rows_with_param_value)
+                    else:
+                        rows_with_param_value_comb.intersection_update(rows_with_param_value)
+                    if len(rows_with_param_value_comb) == 0:
+                        break
+                if rows_with_param_value_comb is None or len(rows_with_param_value_comb) == 0:
+                    continue # next value combination
+
+                comb_rows_count = len(rows_with_param_value_comb)
+                comb_inrange_rows_count = len([r for r in rows_with_param_value_comb if r <= last_row_within_range])
+                comb_rows_rmin = min(data[r][0] for r in rows_with_param_value_comb)
+                comb_rows_rmax = max(data[r][0] for r in rows_with_param_value_comb)
+                score_rows_outside_range_portion = (comb_rows_count - comb_inrange_rows_count) / comb_rows_count if comb_rows_count > 0 else 1.0
+                score_param_count = len(pcomb)
+                outside_range_sqrerrors = [
+                        ((data[r][0] - rmin) if data[r][0] < rmin else (data[r][0] - rmax)) ** 2
+                        for r in rows_with_param_value_comb
+                        if r > last_row_within_range
+                ]
+                score_outside_range_sqrerror = 0 if len(outside_range_sqrerrors) == 0 else sum(outside_range_sqrerrors)/len(outside_range_sqrerrors)
+
+                score_rmin_sqrerror = (comb_rows_rmin - rmin) **2
+                score_rmax_sqrerror = (comb_rows_rmax - rmax) **2
+                score_tuple = (
+                    score_rows_outside_range_portion,
+                    score_outside_range_sqrerror,
+                    score_param_count,
+                    score_rmin_sqrerror,
+                    score_rmax_sqrerror,
+                )
+                print_this = opt_print_all
+                if best_score is None or score_tuple < best_score:
+                    best_score = score_tuple
+                    best_comb = (pcomb, pcomb_value, comb_rows_rmin, comb_rows_rmax)
+                    if opt_print_improving:
+                        print_this = True
+                if print_this:
+                    print("%.3f %.1f %d %.1f %.1f range [%d-%d] %s, rows in: %d rows out: %d" % (
+                        score_tuple[0], score_tuple[1], score_tuple[2], score_tuple[3], score_tuple[4],
+                        comb_rows_rmin, comb_rows_rmax,
+                        ",".join("%s=%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb)),
+                        comb_inrange_rows_count, comb_rows_count - comb_inrange_rows_count
+                    ))
+    if best_score is not None:
+        pcomb, pcomb_value, comb_rows_rmin, comb_rows_rmax = best_comb
+        print("Best combination:")
+        print("%.3f %.1f %d %.1f %.1f range [%d-%d] %s rows in: %d rows out: %d" % (
+            best_score[0], best_score[1], best_score[2], best_score[3], best_score[4],
+            comb_rows_rmin, comb_rows_rmax,
+            ",".join("%s=%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb)),
+            len([r for r in range(len(data)) if r <= last_row_within_range and all(data[r][i + 1] == pcomb_value[pi] for pi, i in enumerate(pcomb))]),
+            len([r for r in range(len(data)) if r > last_row_within_range and all(data[r][i + 1] == pcomb_value[pi] for pi, i in enumerate(pcomb))])
+        ))
+
+
+if __name__ == "__main__":
+    import getopt
+    opt_search_pcombs_for = None
+    opt_delimiter = ";"
+    opt_print_all = False
+    opt_print_improving = False
+    opt_files = []
+    opt_datatype = int
+
+    try:
+        opts, remainder = getopt.gnu_getopt(
+            sys.argv[1:], 'hd:',
+            ['help', 'delimiter=',
+             'print-all',
+             'print-improving',
+             'search-pcombs-for=',
+             ])
+    except Exception as e:
+        error(str(e))
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            sys.exit(0)
+        elif opt in ["-d", "--delimiter"]:
+            opt_delimiter = arg
+        elif opt in ["--print-all"]:
+            opt_print_all = True
+        elif opt in ["--print-improving"]:
+            opt_print_improving = True
+        elif opt in ["--search-pcombs-for"]:
+            opt_search_pcombs_for = arg
+        else:
+            error("internal error: unimplemented option '%s'" % (opt,))
+
+    opt_files.extend(remainder)
+    if len(opt_files) == 0:
+        opt_files.append("-")
+
+    for fname in opt_files:
+        if fname == "-":
+            data_reader = csv.DictReader(sys.stdin, delimiter=opt_delimiter)
+        else:
+            data_reader = csv.DictReader(open(fname), delimiter=opt_delimiter)
+
+        if opt_search_pcombs_for is not None:
+            search_pcombs_for(data_reader, opt_search_pcombs_for)
