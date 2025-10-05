@@ -50,8 +50,9 @@ Options:
 
 import csv
 import getopt
-import sys
 import itertools
+import math
+import sys
 
 # error prints error message and exits process
 def error(msg, exit_status=1):
@@ -85,6 +86,14 @@ def parse_result_range(results):
         return (rval, rval)
 
 def search_pcombs_for(data_reader, results):
+    def print_score(score_tuple, comb_tuple):
+        pcomb, pcomb_value, comb_results, in_count, out_count = comb_tuple
+        print("%.3f %.3f %d [%d-%d] avg %.0f in/out %d/%d with: %s" % (
+                score_tuple[0], score_tuple[1], score_tuple[2],
+                min(comb_results), max(comb_results), sum(comb_results)/len(comb_results),
+                in_count, out_count,
+                ",".join("%s=%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb))
+                ))
     (rmin, rmax) = parse_result_range(results)
     # params is a list of parameter names
     params = data_reader.fieldnames[1:]
@@ -126,14 +135,13 @@ def search_pcombs_for(data_reader, results):
     # First go through single parameters, then pairs, etc.
     pcomb_paramcount = 1
     print("score: ")
-    print("1. portion of rows outside range, 0.0 is best")
-    print("2. average of squared errors outside range results, lower is better")
+    print("1. root mean square error for outside-range results, lower is better")
+    print("2. root mean square error for insdie-range results, lower is better")
     print("3. parameter count, lower is better")
-    print("4. squared error from minimum result, lower is better if lower results are better")
-    print("5. squared error from maximum result, lower is better if higher results are better")
     print()
     best_score = None
     best_comb = None
+    best_comb_results = None
     for pcomb_paramcount in range(1, len(params) + 1):
         for pcomb in itertools.combinations(range(len(params)), pcomb_paramcount):
             comb_params_within_range = set()
@@ -154,50 +162,42 @@ def search_pcombs_for(data_reader, results):
                     continue # next value combination
 
                 comb_rows_count = len(rows_with_param_value_comb)
-                comb_inrange_rows_count = len([r for r in rows_with_param_value_comb if r <= last_row_within_range])
-                comb_rows_rmin = min(data[r][0] for r in rows_with_param_value_comb)
-                comb_rows_rmax = max(data[r][0] for r in rows_with_param_value_comb)
-                score_rows_outside_range_portion = (comb_rows_count - comb_inrange_rows_count) / comb_rows_count if comb_rows_count > 0 else 1.0
-                score_param_count = len(pcomb)
-                outside_range_sqrerrors = [
-                        ((data[r][0] - rmin) if data[r][0] < rmin else (data[r][0] - rmax)) ** 2
-                        for r in rows_with_param_value_comb
-                        if r > last_row_within_range
-                ]
-                score_outside_range_sqrerror = 0 if len(outside_range_sqrerrors) == 0 else sum(outside_range_sqrerrors)/len(outside_range_sqrerrors)
+                results = [data[r][0] for r in rows_with_param_value_comb]
+                outside_sqrerrors = [(result - rmin) ** 2 if result < rmin else (result - rmax) ** 2
+                                           for result in results if result < rmin or result > rmax]
+                outside_count = len(outside_sqrerrors)
+                score_outside_rmse = 0 if outside_count == 0 else math.sqrt(sum(outside_sqrerrors)/outside_count)
 
-                score_rmin_sqrerror = (comb_rows_rmin - rmin) **2
-                score_rmax_sqrerror = (comb_rows_rmax - rmax) **2
+                # TODO: let user configure --higher-is-better, --middle-is-better
+                # Now inside_sqrerror assumes --lower-is-better: best results are close to rmin
+                # instead of rmax or the middle of the range.
+                inside_sqrerrors = [(result - rmin) ** 2 for result in results if rmin <= result <= rmax]
+                score_inside_rmse = 0 if len(inside_sqrerrors) == 0 else math.sqrt(sum(inside_sqrerrors)/len(inside_sqrerrors))
+                score_param_count = len(pcomb)
+
                 score_tuple = (
-                    score_rows_outside_range_portion,
-                    score_outside_range_sqrerror,
+                    score_outside_rmse,
+                    score_inside_rmse,
                     score_param_count,
-                    score_rmin_sqrerror,
-                    score_rmax_sqrerror,
+                )
+                comb_tuple = (
+                    pcomb,
+                    pcomb_value,
+                    results,
+                    comb_rows_count - outside_count,
+                    outside_count,
                 )
                 print_this = opt_print_all
                 if best_score is None or score_tuple < best_score:
                     best_score = score_tuple
-                    best_comb = (pcomb, pcomb_value, comb_rows_rmin, comb_rows_rmax)
+                    best_comb = comb_tuple
                     if opt_print_improving:
                         print_this = True
                 if print_this:
-                    print("%.3f %.1f %d %.1f %.1f range [%d-%d] %s, rows in: %d rows out: %d" % (
-                        score_tuple[0], score_tuple[1], score_tuple[2], score_tuple[3], score_tuple[4],
-                        comb_rows_rmin, comb_rows_rmax,
-                        ",".join("%s=%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb)),
-                        comb_inrange_rows_count, comb_rows_count - comb_inrange_rows_count
-                    ))
+                    print_score(score_tuple, comb_tuple)
     if best_score is not None:
-        pcomb, pcomb_value, comb_rows_rmin, comb_rows_rmax = best_comb
         print("Best combination:")
-        print("%.3f %.1f %d %.1f %.1f range [%d-%d] %s rows in: %d rows out: %d" % (
-            best_score[0], best_score[1], best_score[2], best_score[3], best_score[4],
-            comb_rows_rmin, comb_rows_rmax,
-            ",".join("%s=%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb)),
-            len([r for r in range(len(data)) if r <= last_row_within_range and all(data[r][i + 1] == pcomb_value[pi] for pi, i in enumerate(pcomb))]),
-            len([r for r in range(len(data)) if r > last_row_within_range and all(data[r][i + 1] == pcomb_value[pi] for pi, i in enumerate(pcomb))])
-        ))
+        print_score(best_score, best_comb)
 
 
 if __name__ == "__main__":
