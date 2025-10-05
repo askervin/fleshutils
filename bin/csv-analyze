@@ -46,6 +46,13 @@ Options:
                                      given RESULTS. RESULTS can be given as
                                      a range: MIN-MAX or as a single value: VAL.
 
+  --better-inside-range MODE         set how results inside search range
+                                     are treated when searching for best
+                                     parameter combinations. MODE can be
+                                     "lower": close to MIN are better
+                                     "higher": close to MAX are better
+                                     "middle": close the middle arebetter
+                                     "none": all results in range are equal.
 """
 
 import csv
@@ -88,8 +95,8 @@ def parse_result_range(results):
 def search_pcombs_for(data_reader, results):
     def print_score(score_tuple, comb_tuple):
         pcomb, pcomb_value, comb_results, in_count, out_count = comb_tuple
-        print("%.3f %.3f %d [%d-%d] avg %.0f in/out %d/%d with: %s" % (
-                score_tuple[0], score_tuple[1], score_tuple[2],
+        print("%.3f %.3f %d %d [%d-%d] avg %.0f in/out %d/%d with: %s" % (
+                score_tuple[0], score_tuple[1], score_tuple[2], score_tuple[3],
                 min(comb_results), max(comb_results), sum(comb_results)/len(comb_results),
                 in_count, out_count,
                 ",".join("%s=%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb))
@@ -137,8 +144,9 @@ def search_pcombs_for(data_reader, results):
     pcomb_paramcount = 1
     print("score: ")
     print("1. root mean square error for outside-range results, lower is better")
-    print("2. root mean square error for insdie-range results, lower is better")
-    print("3. parameter count, lower is better")
+    print("2. root mean square error for inside-range results, lower is better")
+    print("3. results dropped as outside combination, lower is better (indicates reliability)")
+    print("4. parameter count, lower is better")
     print()
     best_score = None
     best_comb = None
@@ -172,13 +180,24 @@ def search_pcombs_for(data_reader, results):
                 # TODO: let user configure --higher-is-better, --middle-is-better
                 # Now inside_sqrerror assumes --lower-is-better: best results are close to rmin
                 # instead of rmax or the middle of the range.
-                inside_sqrerrors = [(result - rmin) ** 2 for result in results if rmin <= result <= rmax]
+                if opt_better_inside_range == "lower":
+                    inside_sqrerrors = [(result - rmin) ** 2 for result in results if rmin <= result <= rmax]
+                elif opt_better_inside_range == "higher":
+                    inside_sqrerrors = [(result - rmax) ** 2 for result in results if rmin <= result <= rmax]
+                elif opt_better_inside_range == "middle":
+                    middle = (rmin + rmax) / 2
+                    inside_sqrerrors = [(result - middle) ** 2 for result in results if rmin <= result <= rmax]
+                elif opt_better_inside_range == "none":
+                    inside_sqrerrors = [0 for result in results if rmin <= result <= rmax]
                 score_inside_rmse = 0 if len(inside_sqrerrors) == 0 else math.sqrt(sum(inside_sqrerrors)/len(inside_sqrerrors))
                 score_param_count = len(pcomb)
+
+                score_dropped_combs = len(data) - comb_rows_count
 
                 score_tuple = (
                     score_outside_rmse,
                     score_inside_rmse,
+                    score_dropped_combs,
                     score_param_count,
                 )
                 comb_tuple = (
@@ -206,7 +225,8 @@ if __name__ == "__main__":
     opt_search_pcombs_for = None
     opt_delimiter = ";"
     opt_print_all = False
-    opt_print_improving = False
+    opt_print_improving = True
+    opt_better_inside_range = "lower"
     opt_files = []
     opt_datatype = int
 
@@ -217,6 +237,7 @@ if __name__ == "__main__":
              'print-all',
              'print-improving',
              'search-pcombs-for=',
+             'better-inside-range=',
              ])
     except Exception as e:
         error(str(e))
@@ -232,6 +253,11 @@ if __name__ == "__main__":
             opt_print_improving = True
         elif opt in ["--search-pcombs-for"]:
             opt_search_pcombs_for = arg
+        elif opt in ["--better-inside-range"]:
+            if arg in ["lower", "higher", "middle", "none"]:
+                opt_better_inside_range = arg
+            else:
+                error("invalid --better-inside-range mode '%s'" % (arg,))
         else:
             error("internal error: unimplemented option '%s'" % (opt,))
 
