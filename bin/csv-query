@@ -55,6 +55,8 @@ Options for SQL-like queries:
                                      NAME is column name for EXPR value.
                                      If NAME is omitted, EXPR is used as NAME.
                                      The default is --select "*".
+  -S, --dont-select FIELDSPEC[DELIMITER FIELDSPEC...] exclude from selected
+                                     fields.
   -w, --where EXPR                   output only rows where EXPR is True.
   -g, --group [[NAME]=]EXPR          Group rows by the value of EXPR. Every
                                      separate value forms a new group of data.
@@ -345,6 +347,7 @@ if __name__ == "__main__":
     opt_out_delimiter = None
     opt_out_width = None
     opt_select = []
+    opt_dont_select = set()
     opt_where = None
     opt_group = None
     opt_type = []
@@ -354,10 +357,10 @@ if __name__ == "__main__":
     opt_post_mortem = False
     try:
         opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hCd:D:W:f:X:x:s:w:g:t:',
+            sys.argv[1:], 'hCd:D:W:f:X:x:s:S:w:g:t:',
             ['help', 'columns', 'no-columns', 'delimiter=', 'out-delimiter=',
              'out-width=', 'type=', 'exec-file=', 'exec-row=',
-             'file=', 'select=', 'where=', 'group=',
+             'file=', 'select=', 'dont-select=', 'where=', 'group=',
              'columns-from=',
              'post-mortem'])
     except Exception as e:
@@ -389,6 +392,8 @@ if __name__ == "__main__":
             opt_exec_row.append(compile(arg, "/parameter --exec-row='%s'" % (arg,), "single"))
         elif opt in ["-s", "--select"]:
             opt_select.extend(arg.split(opt_delimiter))
+        elif opt in ["-S", "--dont-select"]:
+            opt_dont_select.update(set(arg.split(opt_delimiter)))
         elif opt in ["-w", "--where"]:
             if opt_where is not None:
                 error("multiple -w/--where expressions")
@@ -461,6 +466,11 @@ if __name__ == "__main__":
                     fields.append((field, expr))
                 else:
                     fields.extend([f.strip() for f in data_reader.fieldnames if fnmatch.fnmatch(f.strip(), field_pattern) and f.strip()])
+            for field_pattern in opt_dont_select:
+                fields = [f for f in fields
+                          if not ((isinstance(f, tuple) and
+                                  fnmatch.fnmatch(f[0], field_pattern)) or
+                                  (isinstance(f, str) and fnmatch.fnmatch(f, field_pattern)))]
             try:
                 result = query(data, fields, opt_where, opt_group,
                                exec_file=opt_exec_file,
