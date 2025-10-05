@@ -99,7 +99,8 @@ def search_pcombs_for(data_reader, results):
     params = data_reader.fieldnames[1:]
     print("Detected data table: result column %s, parameters: %s" % (data_reader.fieldnames[0], ", ".join(params)))
     # data contains all rows data in a numeric format
-    data = [[opt_datatype(row[f]) for f in data_reader.fieldnames] for row in data_reader]
+    MISSING_PARAM = -1
+    data = [[(opt_datatype(row[f]) if row[f].strip() != "" else MISSING_PARAM) for f in data_reader.fieldnames] for row in data_reader]
     # sort data so that rows with result in the given range come first
     data.sort(key=lambda row: (row[0] < rmin or row[0] > rmax, row[0]))
 
