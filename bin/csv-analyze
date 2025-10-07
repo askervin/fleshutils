@@ -41,18 +41,19 @@ Options:
   --print-improving                  print searched elements that improve
                                      the best result so far.
 
-  --search-pcombs-for RESULTS        search for parameter and parameter value
-                                     combinations that explain results in
-                                     given RESULTS. RESULTS can be given as
-                                     a range: MIN-MAX or as a single value: VAL.
+  --search-pv RESULTS                search for parameter-value combinations
+                                     that lead into RESULTS. RESULTS are given
+                                     as a range: MIN-MAX or as a single
+                                     value: VAL.
 
-  --better-inside-range MODE         set how results inside search range
-                                     are treated when searching for best
+  --better-in-range MODE             set how results in search RESULTS range
+                                     are treated when searching for the best
                                      parameter combinations. MODE can be
                                      "lower": close to MIN are better
                                      "higher": close to MAX are better
-                                     "middle": close the middle arebetter
+                                     "middle": close the middle are better
                                      "none": all results in range are equal.
+
 """
 
 import csv
@@ -92,19 +93,46 @@ def parse_result_range(results):
             error("invalid result value '%s'" % (results,))
         return (rval, rval)
 
-def search_pcombs_for(data_reader, results):
+def search_pv(data_reader, results):
+    best_highscores = []
+    comb_best_highscores = []
+    max_highscores = 1
     def print_score(score_tuple, comb_tuple):
+        nonlocal last_row_within_range, data
         pcomb, pcomb_value, comb_results, in_count, out_count = comb_tuple
-        print("%.3f %.3f %d %d [%d-%d] avg %.0f in/out %d/%d with: %s" % (
+        match_target = 0.0
+        if last_row_within_range >= 0:
+            match_target = in_count / (last_row_within_range + 1)
+        match_all = (in_count + out_count) / len(data)
+        print("%.3f %.3f %d %d min=%d max=%d avg=%.3f tgt=%d tot=%d tgtcov=%.3f totcov=%.3f where='%s'" % (
                 score_tuple[0], score_tuple[1], score_tuple[2], score_tuple[3],
                 min(comb_results), max(comb_results), sum(comb_results)/len(comb_results),
-                in_count, out_count,
-                ",".join("%s=%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb))
+                in_count, in_count+out_count,
+                match_target, match_all,
+                " and ".join("%s==%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb))
                 ))
+    def update_highscores(highscores, max_highscores, score_tuple, comb_tuple):
+        # TODO: consider alternative for highscore list:
+        # how about constructing a set that covers as large a portion of
+        # results in range as possible?
+        if len(highscores) > 0 and score_tuple >= highscores[-1][0]:
+            return False
+        new_best = len(highscores)==0 or (score_tuple < highscores[0][0])
+        highscores.append((score_tuple, comb_tuple))
+        highscores.sort()
+        if len(highscores) > max_highscores:
+            highscores.pop()
+        return new_best
+    def print_highscores(highscores, title):
+        print(title)
+        for n, (score_tuple, comb_tuple) in enumerate(highscores):
+            print("%d." % (n+1,), end=" ")
+            print_score(score_tuple, comb_tuple)
+
     (rmin, rmax) = parse_result_range(results)
     # params is a list of parameter names
     params = data_reader.fieldnames[1:]
-    print("Detected data table: result column %s, parameters: %s" % (data_reader.fieldnames[0], ", ".join(params)))
+    print("Detected data table: result in column %s, parameters: %s" % (data_reader.fieldnames[0], ", ".join(params)))
     # data contains all rows data in a numeric format
     MISSING_PARAM = -1
     data = [[(opt_datatype(row[f]) if row[f].strip() != "" else MISSING_PARAM) for f in data_reader.fieldnames] for row in data_reader]
@@ -135,23 +163,23 @@ def search_pcombs_for(data_reader, results):
                 for v, rset in param_values[param_index].items():
                     param_values_in_range[param_index][v] = set(rset)
     if last_row_within_range == -1:
-        print("No results within range [%s-%s], going through all parameter values to find a combination with smallest error" % (rmin, rmax))
+        print("No results within range [%s,%s], going through all parameter values to find a combination with smallest error" % (rmin, rmax))
         for param_index in range(len(params)):
             param_values_in_range[param_index] = param_values[param_index]
+    else:
+        print("%d out of %d results within range [%s,%s]" % (last_row_within_range + 1, len(data), rmin, rmax))
 
     # Find parameter combinations that explain results in the given range.
     # First go through single parameters, then pairs, etc.
     pcomb_paramcount = 1
     print("score: ")
-    print("1. root mean square error for outside-range results, lower is better")
-    print("2. root mean square error for inside-range results, lower is better")
-    print("3. results dropped as outside combination, lower is better (indicates reliability)")
+    print("1. root mean square error for out-of-range results, lower is better")
+    print("2. root mean square error for in-range results, lower is better")
+    print("3. total results not matching parameter combination, lower is better (indicates reliability)")
     print("4. parameter count, lower is better")
     print()
-    best_score = None
-    best_comb = None
-    best_comb_results = None
     for pcomb_paramcount in range(1, len(params) + 1):
+        highscores = []
         for pcomb in itertools.combinations(range(len(params)), pcomb_paramcount):
             comb_params_within_range = set()
             pcomb_values_to_search = [param_values_in_range[i].keys() for i in pcomb]
@@ -168,7 +196,7 @@ def search_pcombs_for(data_reader, results):
                     if len(rows_with_param_value_comb) == 0:
                         break
                 if rows_with_param_value_comb is None or len(rows_with_param_value_comb) == 0:
-                    continue # next value combination
+                    continue # no results with this param-value combination, next value combination
 
                 comb_rows_count = len(rows_with_param_value_comb)
                 results = [data[r][0] for r in rows_with_param_value_comb]
@@ -177,17 +205,14 @@ def search_pcombs_for(data_reader, results):
                 outside_count = len(outside_sqrerrors)
                 score_outside_rmse = 0 if outside_count == 0 else math.sqrt(sum(outside_sqrerrors)/outside_count)
 
-                # TODO: let user configure --higher-is-better, --middle-is-better
-                # Now inside_sqrerror assumes --lower-is-better: best results are close to rmin
-                # instead of rmax or the middle of the range.
-                if opt_better_inside_range == "lower":
+                if opt_better_in_range == "lower":
                     inside_sqrerrors = [(result - rmin) ** 2 for result in results if rmin <= result <= rmax]
-                elif opt_better_inside_range == "higher":
+                elif opt_better_in_range == "higher":
                     inside_sqrerrors = [(result - rmax) ** 2 for result in results if rmin <= result <= rmax]
-                elif opt_better_inside_range == "middle":
+                elif opt_better_in_range == "middle":
                     middle = (rmin + rmax) / 2
                     inside_sqrerrors = [(result - middle) ** 2 for result in results if rmin <= result <= rmax]
-                elif opt_better_inside_range == "none":
+                elif opt_better_in_range == "none":
                     inside_sqrerrors = [0 for result in results if rmin <= result <= rmax]
                 score_inside_rmse = 0 if len(inside_sqrerrors) == 0 else math.sqrt(sum(inside_sqrerrors)/len(inside_sqrerrors))
                 score_param_count = len(pcomb)
@@ -208,25 +233,26 @@ def search_pcombs_for(data_reader, results):
                     outside_count,
                 )
                 print_this = opt_print_all
-                if best_score is None or score_tuple < best_score:
-                    best_score = score_tuple
-                    best_comb = comb_tuple
-                    if opt_print_improving:
-                        print_this = True
+
+                if update_highscores(comb_best_highscores, max_highscores, score_tuple, comb_tuple):
+                    if update_highscores(best_highscores, max_highscores, score_tuple, comb_tuple):
+                        if opt_print_improving:
+                            print("new best", end=" ")
+                            print_this = True
                 if print_this:
                     print_score(score_tuple, comb_tuple)
-    if best_score is not None:
-        print("Best combination:")
-        print_score(best_score, best_comb)
-
+        print_highscores(comb_best_highscores, "Top %d of %d parameter-value combinations" % (max_highscores, pcomb_paramcount))
+        comb_best_highscores = []
+    if best_highscores:
+        print_highscores(best_highscores, "Top %d combination from all combinations" % (max_highscores,))
 
 if __name__ == "__main__":
     import getopt
-    opt_search_pcombs_for = None
+    opt_search_pv = None
     opt_delimiter = ";"
     opt_print_all = False
     opt_print_improving = True
-    opt_better_inside_range = "lower"
+    opt_better_in_range = "lower"
     opt_files = []
     opt_datatype = int
 
@@ -236,8 +262,8 @@ if __name__ == "__main__":
             ['help', 'delimiter=',
              'print-all',
              'print-improving',
-             'search-pcombs-for=',
-             'better-inside-range=',
+             'search-pv=',
+             'better-in-range=',
              ])
     except Exception as e:
         error(str(e))
@@ -251,11 +277,11 @@ if __name__ == "__main__":
             opt_print_all = True
         elif opt in ["--print-improving"]:
             opt_print_improving = True
-        elif opt in ["--search-pcombs-for"]:
-            opt_search_pcombs_for = arg
-        elif opt in ["--better-inside-range"]:
+        elif opt in ["--search-pv"]:
+            opt_search_pv = arg
+        elif opt in ["--better-in-range"]:
             if arg in ["lower", "higher", "middle", "none"]:
-                opt_better_inside_range = arg
+                opt_better_in_range = arg
             else:
                 error("invalid --better-inside-range mode '%s'" % (arg,))
         else:
@@ -271,5 +297,5 @@ if __name__ == "__main__":
         else:
             data_reader = csv.DictReader(open(fname), delimiter=opt_delimiter)
 
-        if opt_search_pcombs_for is not None:
-            search_pcombs_for(data_reader, opt_search_pcombs_for)
+        if opt_search_pv is not None:
+            search_pv(data_reader, opt_search_pv)
