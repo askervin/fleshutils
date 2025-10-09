@@ -89,7 +89,13 @@ typedef struct {
     char* expanded;
 } macro_t;
 
-macro_t macros[2] = {
+macro_t macros[3] = {
+    { .shorthand = "ignu",
+      .description = "include posix headers with _GNU_SOURCE defined",
+      .expanded =
+      "#define _GNU_SOURCE\n"
+      "x: iposix\n"
+    },
     { .shorthand = "iposix",
       .description = "include posix headers",
       .expanded =
