@@ -24,14 +24,31 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-r"""csv-stats [options] command FILE...
+r"""csv-analyze [options] command [command-options] FILE...
 
 Search data in FILE where data is formatted in a table:
 
-result  param0  param1 ... paramn
+result  param0  param1 ... paramN
     r0  p0val0  p1val0 ... pnval0
     r1  p0val1  p1val1 ... pnval1
    ...
+
+Command: hit                         search parameter-value combinations
+                                     that most likely hits given results.
+
+  --results RESULTS                  RESULTS are given as a range: MIN-MAX or
+                                     as a single value: VAL.
+
+  --paramcombs COUNTS                calculate through all combinations
+                                     COUNT parameters. The default is 1-N,
+                                     that is, cover all parameter combinations
+                                     from single up to all parameters.
+
+Command: explain                     search for best hit, then exclude those
+                                     results, and repeat for the remaining
+                                     results until no more likely hits are
+                                     found. Takes the same options as the hit
+                                     command
 
 Options:
   -h, --help
@@ -40,11 +57,6 @@ Options:
   --print-all                        print all searched elements.
   --print-improving                  print searched elements that improve
                                      the best result so far.
-
-  --search-pv RESULTS                search for parameter-value combinations
-                                     that lead into RESULTS. RESULTS are given
-                                     as a range: MIN-MAX or as a single
-                                     value: VAL.
 
   --better-in-range MODE             set how results in search RESULTS range
                                      are treated when searching for the best
@@ -93,16 +105,49 @@ def parse_result_range(results):
             error("invalid result value '%s'" % (results,))
         return (rval, rval)
 
-def search_pv(data_reader, results):
+def parse_paramcombs(paramcombs, paramcount):
+    parts = paramcombs.split(",")
+    result = set()
+    for part in parts:
+        if "-" in part:
+            subparts = part.split("-", 1)
+            try:
+                pmin = int(subparts[0])
+                pmax = int(subparts[1])
+            except Exception:
+                error("invalid paramcombs range '%s'" % (part,))
+            if pmin < 1 or pmax < 1 or pmin > pmax or pmax > paramcount:
+                error("invalid paramcombs range '%s'" % (part,))
+            for p in range(pmin, pmax + 1):
+                result.add(p)
+        else:
+            try:
+                p = int(part)
+            except Exception:
+                error("invalid paramcombs value '%s'" % (part,))
+            if p < 1 or p > paramcount:
+                error("invalid paramcombs value '%s'" % (part,))
+            result.add(p)
+    return sorted(result)
+
+def params_data(data_reader):
+    # data contains all rows data in a numeric format
+    MISSING_VALUE = -1
+    params = data_reader.fieldnames[1:]
+    data = [[(opt_datatype(row[f]) if row[f].strip() != "" else MISSING_VALUE) for f in data_reader.fieldnames] for row in data_reader]
+    print("Detected data table: result in column %s, parameters: %s, rows: %d" % (data_reader.fieldnames[0], ", ".join(params), len(data)))
+    return (params, data)
+
+def search_hits(params, data, results, paramcombs, except_rows={}):
     best_highscores = []
     comb_best_highscores = []
     max_highscores = 1
     def print_score(score_tuple, comb_tuple):
         nonlocal last_row_within_range, data
-        pcomb, pcomb_value, comb_results, in_count, out_count = comb_tuple
+        pcomb, pcomb_value, comb_results, in_count, out_count, hit_rows = comb_tuple
         match_target = 0.0
         if last_row_within_range >= 0:
-            match_target = in_count / (last_row_within_range + 1)
+            match_target = in_count / (last_row_within_range + 1 - len(except_rows))
         match_all = (in_count + out_count) / len(data)
         print("%.3f %.3f %d %d min=%d max=%d avg=%.3f tgt=%d tot=%d tgtcov=%.3f totcov=%.3f where='%s'" % (
                 score_tuple[0], score_tuple[1], score_tuple[2], score_tuple[3],
@@ -130,12 +175,6 @@ def search_pv(data_reader, results):
             print_score(score_tuple, comb_tuple)
 
     (rmin, rmax) = parse_result_range(results)
-    # params is a list of parameter names
-    params = data_reader.fieldnames[1:]
-    print("Detected data table: result in column %s, parameters: %s" % (data_reader.fieldnames[0], ", ".join(params)))
-    # data contains all rows data in a numeric format
-    MISSING_PARAM = -1
-    data = [[(opt_datatype(row[f]) if row[f].strip() != "" else MISSING_PARAM) for f in data_reader.fieldnames] for row in data_reader]
     # sort data so that rows with result in the given range come first
     data.sort(key=lambda row: (row[0] < rmin or row[0] > rmax, row[0]))
 
@@ -178,7 +217,7 @@ def search_pv(data_reader, results):
     print("3. total results not matching parameter combination, lower is better (indicates reliability)")
     print("4. parameter count, lower is better")
     print()
-    for pcomb_paramcount in range(1, len(params) + 1):
+    for pcomb_paramcount in paramcombs:
         highscores = []
         for pcomb in itertools.combinations(range(len(params)), pcomb_paramcount):
             comb_params_within_range = set()
@@ -195,6 +234,8 @@ def search_pv(data_reader, results):
                         rows_with_param_value_comb.intersection_update(rows_with_param_value)
                     if len(rows_with_param_value_comb) == 0:
                         break
+                if rows_with_param_value_comb is not None:
+                    rows_with_param_value_comb.difference_update(except_rows)
                 if rows_with_param_value_comb is None or len(rows_with_param_value_comb) == 0:
                     continue # no results with this param-value combination, next value combination
 
@@ -231,6 +272,7 @@ def search_pv(data_reader, results):
                     results,
                     comb_rows_count - outside_count,
                     outside_count,
+                    rows_with_param_value_comb,
                 )
                 print_this = opt_print_all
 
@@ -245,13 +287,17 @@ def search_pv(data_reader, results):
         comb_best_highscores = []
     if best_highscores:
         print_highscores(best_highscores, "Top %d combination from all combinations" % (max_highscores,))
+        return best_highscores[0]
+    return None
 
 if __name__ == "__main__":
     import getopt
-    opt_search_pv = None
+    opt_command = None
     opt_delimiter = ";"
     opt_print_all = False
     opt_print_improving = True
+    opt_results = None
+    opt_paramcombs = None
     opt_better_in_range = "lower"
     opt_files = []
     opt_datatype = int
@@ -262,7 +308,8 @@ if __name__ == "__main__":
             ['help', 'delimiter=',
              'print-all',
              'print-improving',
-             'search-pv=',
+             'results=',
+             'paramcombs=',
              'better-in-range=',
              ])
     except Exception as e:
@@ -277,8 +324,10 @@ if __name__ == "__main__":
             opt_print_all = True
         elif opt in ["--print-improving"]:
             opt_print_improving = True
-        elif opt in ["--search-pv"]:
-            opt_search_pv = arg
+        elif opt in ["--results"]:
+            opt_results = arg
+        elif opt in ["--paramcombs"]:
+            opt_paramcombs = arg
         elif opt in ["--better-in-range"]:
             if arg in ["lower", "higher", "middle", "none"]:
                 opt_better_in_range = arg
@@ -286,6 +335,12 @@ if __name__ == "__main__":
                 error("invalid --better-inside-range mode '%s'" % (arg,))
         else:
             error("internal error: unimplemented option '%s'" % (opt,))
+
+    if len(remainder) == 0:
+        error("command missing")
+
+    opt_command = remainder[0]
+    remainder = remainder[1:]
 
     opt_files.extend(remainder)
     if len(opt_files) == 0:
@@ -297,5 +352,34 @@ if __name__ == "__main__":
         else:
             data_reader = csv.DictReader(open(fname), delimiter=opt_delimiter)
 
-        if opt_search_pv is not None:
-            search_pv(data_reader, opt_search_pv)
+    if opt_command == "hit" or opt_command == "explain":
+        if opt_paramcombs is None:
+            opt_paramcombs = range(1, len(data_reader.fieldnames))
+        else:
+            opt_paramcombs = parse_paramcombs(opt_paramcombs, len(data_reader.fieldnames)-1)
+        if opt_results is None:
+            error("--results=RESULTS missing")
+        (params, data) = params_data(data_reader)
+        if opt_command == "hit":
+            search_hits(params, data, opt_results, opt_paramcombs)
+        elif opt_command == "explain":
+            explanations = []
+            searched_rows = set()
+            while True:
+                best_hit = search_hits(params, data, opt_results, opt_paramcombs, searched_rows)
+                if best_hit is None:
+                    break
+                (score_tuple, comb_tuple) = best_hit
+                (pcomb, pcomb_value, comb_results, in_count, out_count, hit_rows) = comb_tuple
+                searched_rows.update(hit_rows)
+                explanations.append(best_hit)
+                for expl in explanations:
+                    print("---")
+                    (score_tuple, comb_tuple) = expl
+                    (pcomb, pcomb_value, comb_results, in_count, out_count, hit_rows) = comb_tuple
+                    print("Explained %d results with parameter combination: %s" % (in_count, " and ".join("%s==%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb))))
+    #print("Explained %d results with parameter combination: %s" % (in_count, " and ".join("%s==%s" % (data_reader.fieldnames[i+1], pcomb_value[pi]) for pi, i in enumerate(pcomb))))
+                if out_count > 0:
+                    print("  Note: %d results outside range" % (out_count,))
+    else:
+        error("invalid command '%s'" % (opt_command,))
