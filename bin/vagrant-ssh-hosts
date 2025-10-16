@@ -1,0 +1,54 @@
+#!/bin/bash
+
+vagrant_ssh_hosts_config=~/.ssh/config.d/vagrant-ssh-hosts
+
+error() {
+    echo "$*" >&2
+    exit 1
+}
+
+[[ -d $(dirname "$vagrant_ssh_hosts_config") ]] || {
+    error "Directory for $vagrant_ssh_hosts_config does not exist. Make sure to add Include for it in .ssh/config, too."
+}
+
+echo -n "" > "$vagrant_ssh_hosts_config"
+
+for pid in $(pidof qemu-system-x86_64); do
+    qemu_args=$(xargs -0 -n1 echo < /proc/$pid/cmdline)
+    vm_name=""
+    vm_ssh_port=""
+    vm_ssh_key=""
+    for arg in $qemu_args; do
+        if grep -q .vagrant/machines <<< $arg; then
+            # parse MACHINENAME from *.vagrant/machines/MACHINENAME/qemu/vq_k_TtfkhDhYw/linked-box.img
+            vm_name=${arg##*.vagrant/machines/}
+            vm_name=${vm_name%%/*}
+            # parse PRIVATEKEY from
+            echo $arg
+            vm_ssh_key=${arg##*file=}
+            echo $vm_ssh_key
+            vm_ssh_key=${vm_ssh_key%/*/*.img}/private_key
+            echo $vm_ssh_key
+            if ! [ -f $vm_ssh_key ]; then
+                echo "could not find private key from $vm_ssh_key for vagrant machine $vm_name"
+                continue
+            fi
+        elif grep -q -- hostfwd=.*-:22 <<< $arg; then
+            # parse SSHPORT from user,id=net0,hostfwd=tcp::50903-:22,net=192.168.76.0/24,dhcpstart=192.168.76.9
+            vm_ssh_port=${arg##*hostfwd=tcp::}
+            vm_ssh_port=${vm_ssh_port%%-:22*}
+        fi
+    done
+    if [[ -z "$vm_name" ]] || [[ -z "$vm_ssh_port" ]] || [[ -z "$vm_ssh_key" ]]; then
+        echo "skipping qemu pid $pid"
+        continue
+    fi
+    cat >> "$vagrant_ssh_hosts_config" <<EOF
+Host $vm_name
+    Hostname localhost
+    User vagrant
+    Port $vm_ssh_port
+    IdentityFile $vm_ssh_key
+
+EOF
+done
