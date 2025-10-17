@@ -24,11 +24,8 @@ for pid in $(pidof qemu-system-x86_64); do
             vm_name=${arg##*.vagrant/machines/}
             vm_name=${vm_name%%/*}
             # parse PRIVATEKEY from
-            echo $arg
             vm_ssh_key=${arg##*file=}
-            echo $vm_ssh_key
             vm_ssh_key=${vm_ssh_key%/*/*.img}/private_key
-            echo $vm_ssh_key
             if ! [ -f $vm_ssh_key ]; then
                 echo "could not find private key from $vm_ssh_key for vagrant machine $vm_name"
                 continue
@@ -43,6 +40,7 @@ for pid in $(pidof qemu-system-x86_64); do
         echo "skipping qemu pid $pid"
         continue
     fi
+    echo "found $vm_name"
     cat >> "$vagrant_ssh_hosts_config" <<EOF
 Host $vm_name
     Hostname localhost
