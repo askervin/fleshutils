@@ -91,8 +91,8 @@ def parse_result_range(results):
     if "-" in results:
         parts = results.split("-", 1)
         try:
-            rmin = opt_datatype(parts[0])
-            rmax = opt_datatype(parts[1])
+            rmin = datatype_int_float(parts[0])
+            rmax = datatype_int_float(parts[1])
         except Exception:
             error("invalid result range '%s'" % (results,))
         if rmin > rmax:
@@ -100,7 +100,7 @@ def parse_result_range(results):
         return (rmin, rmax)
     else:
         try:
-            rval = opt_datatype(results)
+            rval = datatype_int_float(results)
         except Exception:
             error("invalid result value '%s'" % (results,))
         return (rval, rval)
@@ -133,12 +133,13 @@ def parse_paramcombs(paramcombs, paramcount):
 def params_data(data_reader):
     # data contains all rows data in a numeric format
     MISSING_VALUE = -1
-    params = data_reader.fieldnames[1:]
-    data = [[(opt_datatype(row[f]) if row[f].strip() != "" else MISSING_VALUE) for f in data_reader.fieldnames] for row in data_reader]
-    print("Detected data table: result in column %s, parameters: %s, rows: %d" % (data_reader.fieldnames[0], ", ".join(params), len(data)))
+    params = [f.strip() for f in data_reader.fieldnames[1:]]
+    data = [[(datatype_int_float_enumstr(row[f].strip(), f.strip()) if row[f].strip() != "" else MISSING_VALUE) for f in data_reader.fieldnames] for row in data_reader]
+    print("Detected data table: result in column %s, parameters: %s, rows: %d" % (data_reader.fieldnames[0].strip(), ", ".join(params), len(data)))
     return (params, data)
 
 def search_hits(params, data, results, paramcombs, except_rows={}):
+    global opt_print_all, opt_print_improving, opt_print_score_explanations, opt_better_in_range
     best_highscores = []
     comb_best_highscores = []
     max_highscores = 1
@@ -201,22 +202,28 @@ def search_hits(params, data, results, paramcombs, except_rows={}):
                 param_values_in_range[param_index] = {}
                 for v, rset in param_values[param_index].items():
                     param_values_in_range[param_index][v] = set(rset)
-    if last_row_within_range == -1:
+    rows_within_range_to_consider = len(set(range(last_row_within_range)).difference(except_rows))
+    if len(except_rows) > last_row_within_range and rows_within_range_to_consider == 0:
+        print("All %d results within range [%s,%s] explained" % (last_row_within_range + 1, rmin, rmax))
+        return None
+    if last_row_within_range - len(except_rows) == -1:
         print("No results within range [%s,%s], going through all parameter values to find a combination with smallest error" % (rmin, rmax))
         for param_index in range(len(params)):
             param_values_in_range[param_index] = param_values[param_index]
     else:
-        print("%d out of %d results within range [%s,%s]" % (last_row_within_range + 1, len(data), rmin, rmax))
+        print("%d out of %d results within range [%s,%s]" % (rows_within_range_to_consider, len(data)-len(except_rows), rmin, rmax))
 
     # Find parameter combinations that explain results in the given range.
     # First go through single parameters, then pairs, etc.
     pcomb_paramcount = 1
-    print("score: ")
-    print("1. root mean square error for out-of-range results, lower is better")
-    print("2. root mean square error for in-range results, lower is better")
-    print("3. total results not matching parameter combination, lower is better (indicates reliability)")
-    print("4. parameter count, lower is better")
-    print()
+    if opt_print_score_explanations:
+        print("score: ")
+        print("1. root mean square error for out-of-range results, lower is better")
+        print("2. root mean square error for in-range results, lower is better")
+        print("3. total results not matching parameter combination, lower is better (indicates reliability)")
+        print("4. parameter count, lower is better")
+        print()
+        opt_print_score_explanations = False
     for pcomb_paramcount in paramcombs:
         highscores = []
         for pcomb in itertools.combinations(range(len(params)), pcomb_paramcount):
@@ -283,19 +290,57 @@ def search_hits(params, data, results, paramcombs, except_rows={}):
                             print_this = True
                 if print_this:
                     print_score(score_tuple, comb_tuple)
-        print_highscores(comb_best_highscores, "Top %d of %d parameter-value combinations" % (max_highscores, pcomb_paramcount))
+        if opt_print_improving:
+            print_highscores(comb_best_highscores, "Top %d of %d parameter-value combinations" % (max_highscores, pcomb_paramcount))
         comb_best_highscores = []
     if best_highscores:
         print_highscores(best_highscores, "Top %d combination from all combinations" % (max_highscores,))
         return best_highscores[0]
     return None
 
+def datatype_int_float(value, fieldname=""):
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    return float(value)
+
+_enumstr = {}
+def datatype_int_float_enumstr(value, fieldname=""):
+    global _enumstr
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    try:
+        return _enumstr[fieldname][value]
+    except KeyError:
+        if not fieldname in _enumstr:
+            _enumstr[fieldname] = {}
+        _enumstr[fieldname][value] = len(_enumstr[fieldname])
+        print("use %s==%d for %s=='%s'" % (fieldname, _enumstr[fieldname][value], fieldname, value))
+        return _enumstr[fieldname][value]
+
+def print_explanations(explanations):
+    print("Explanations:")
+    for n, (score_tuple, comb_tuple) in enumerate(explanations):
+        print("%d." % (n+1,), end=" ")
+        pcomb, pcomb_value, comb_results, in_count, out_count, hit_rows = comb_tuple
+        print("explained %d results in [%d-%d] with %s" % (in_count, min(comb_results), max(comb_results), " and ".join("%s==%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb))))
+        if out_count > 0:
+            print("  Note: %d results outside range" % (out_count,))
+
 if __name__ == "__main__":
     import getopt
     opt_command = None
     opt_delimiter = ";"
     opt_print_all = False
-    opt_print_improving = True
+    opt_print_improving = False
+    opt_print_score_explanations = True
     opt_results = None
     opt_paramcombs = None
     opt_better_in_range = "lower"
@@ -373,13 +418,9 @@ if __name__ == "__main__":
                 (pcomb, pcomb_value, comb_results, in_count, out_count, hit_rows) = comb_tuple
                 searched_rows.update(hit_rows)
                 explanations.append(best_hit)
-                for expl in explanations:
-                    print("---")
-                    (score_tuple, comb_tuple) = expl
-                    (pcomb, pcomb_value, comb_results, in_count, out_count, hit_rows) = comb_tuple
-                    print("Explained %d results with parameter combination: %s" % (in_count, " and ".join("%s==%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb))))
-    #print("Explained %d results with parameter combination: %s" % (in_count, " and ".join("%s==%s" % (data_reader.fieldnames[i+1], pcomb_value[pi]) for pi, i in enumerate(pcomb))))
-                if out_count > 0:
-                    print("  Note: %d results outside range" % (out_count,))
+                if opt_print_improving:
+                    print_explanations(explanations)
+            if not opt_print_improving:
+                print_explanations(explanations)
     else:
         error("invalid command '%s'" % (opt_command,))
