@@ -330,9 +330,9 @@ def print_explanations(explanations):
     for n, (score_tuple, comb_tuple) in enumerate(explanations):
         print("%d." % (n+1,), end=" ")
         pcomb, pcomb_value, comb_results, in_count, out_count, hit_rows = comb_tuple
-        print("explained %d results in [%d-%d] with %s" % (in_count, min(comb_results), max(comb_results), " and ".join("%s==%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb))))
+        print("%d results in [%d-%d] where %s" % (in_count, min(comb_results), max(comb_results), " and ".join("%s==%s" % (params[i], pcomb_value[pi]) for pi, i in enumerate(pcomb))))
         if out_count > 0:
-            print("  Note: %d results outside range" % (out_count,))
+            print("   note: %d results outside range" % (out_count,))
 
 if __name__ == "__main__":
     import getopt
