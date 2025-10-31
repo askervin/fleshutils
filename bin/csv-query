@@ -397,7 +397,8 @@ if __name__ == "__main__":
         elif opt in ["-w", "--where"]:
             if opt_where is not None:
                 error("multiple -w/--where expressions")
-            opt_where = eval("lambda:" + arg)
+            if len(arg.strip()) > 0:
+                opt_where = eval("lambda:" + arg)
         elif opt in ["-g", "--group"]:
             if opt_group is not None:
                 error("multiple -g/--group expressions")
