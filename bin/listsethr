@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2025 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""listsethr - convert consecutive integers into listset format
+
+Usage: listsethr [options] [FILE]
+
+Options:
+  -h, --help              print help
+
+Examples:
+  strace -e trace=sched_setaffinity -f $(pidof containerd) 2>&1 | listsethr
+"""
+
+import getopt
+import sys
+import re
+
+opt_input = sys.stdin
+
+g_command = "listsethr"
+
+def error(msg, exit_status=1):
+    """print error message and exit"""
+    if msg:
+        sys.stderr.write("%s: %s\n" % (g_command, msg))
+    if exit_status != None:
+        sys.exit(1)
+
+def to_listset(nums):
+    try:
+        ints = [int(num) for num in nums]
+    except ValueError:
+        return nums
+    ints = sorted(set(ints))
+    ranges = []
+    prev = None
+    last_start = None
+    for i in ints:
+        if prev is None:
+            last_start = i
+        elif prev != i - 1:
+            if prev != last_start:
+                ranges.append("%d-%d" % (last_start, prev))
+            else:
+                ranges.append(str(prev))
+            last_start = i
+        prev = i
+    if prev != last_start:
+        ranges.append("%d-%d" % (last_start, prev))
+    else:
+        ranges.append(str(prev))
+    return ",".join(ranges)
+
+def main():
+    global opt_input
+    r_sep = r'\s+'
+    r_int = r'((-)?(0|([1-9][0-9]*)))'
+    r_next_ends_num = r'(?=($|[^0-9]))'
+    # match at minimum two subsequent integers
+    nums = re.compile(r_int + '(' + r_sep + r_int + ')+' + r_next_ends_num)
+    sep = re.compile(r_sep)
+    line = opt_input.readline()
+    while line:
+        new_line = []
+        m = nums.search(line)
+        while m:
+            mdict = m.groupdict()
+            new_line.append(line[:m.start()])
+            new_line.append(to_listset(sep.split(line[m.start():m.end()])))
+            line = line[m.end():]
+            m = nums.search(line)
+        new_line.append(line)
+        sys.stdout.write("".join(new_line))
+        line = opt_input.readline()
+    return
+
+if __name__ == "__main__":
+    try:
+        opts, remainder = getopt.gnu_getopt(
+            sys.argv[1:],
+            'hw',
+            ['help'])
+    except getopt.GetoptError as e:
+        error(str(e))
+
+    if remainder:
+        opt_input = open(remainder[0])
+
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            error(None, exit_status=0)
+    main()
