@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2025 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+r"""csv-plot [options] command [command-options] FILE...
+
+
+Command: scatter                     plot scatter diagram
+
+  Data in FILE is formatted in a table:
+
+       y   x   param0 ... paramN
+      y0  x0   p0val0 ... pnval0
+      y1  x1   p1val0 ... pnval1
+      ...
+
+  Y values must be numeric.
+  Other values are interpreted as numeric, if possible.
+  Number of possible values for each param should be very limited.
+
+  scatter command options:
+      --o OUTPUT_FILE                output SVG file name, default is "scatter.svg".
+      --logx                         use logarithmic scale for X axis.
+      --logy                         use logarithmic scale for Y axis.
+      --offx OFFSET_MODE             X offset mode to reduce overplotting:
+                                     'comb' (default): combine small offset
+                                                       based on parameter values
+                                     'random[-PERCENTAGE]': random offset
+                                                            in range +/- PERCENTAGE of
+                                                            X axis length (default 0.05)
+
+
+Command: histogram                   plot histogram
+
+  Data in FILE is formatted in a table with at least one column:
+
+       y  [ignore remaining headers...]
+      y0  [ignore remaining values...]
+      ...
+
+  Y values are interpreted as numeric, if possible. Otherwise sorted.
+  Other columns are ignored.
+
+  histogram command options:
+      --slots SLOTS                  number of slots in histogram, default is 10.
+
+Options:
+  -h, --help
+  -d, --delimiter DELIMITER          set field separator, the default is ";".
+"""
+
+import csv
+import getopt
+import itertools
+import math
+import random
+import sys
+
+# error prints error message and exits process
+def error(msg, exit_status=1):
+    if msg:
+        sys.stderr.write("csv-plot: %s\n" % (msg,))
+    if exit_status is not None:
+        sys.exit(exit_status)
+
+def datatype_int_float(value, fieldname=""):
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    return float(value)
+
+def datatype_int_float_str(value, fieldname=""):
+    global _enumstr
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return str(value)
+
+def header_data(data_reader):
+    # data contains all rows data in a numeric format
+    MISSING_VALUE = -1
+    header = [f.strip() for f in data_reader.fieldnames]
+    data = [[(datatype_int_float_str(row[f].strip(), f.strip()) if row[f].strip() != "" else MISSING_VALUE) for f in data_reader.fieldnames] for row in data_reader]
+    return (header, data)
+
+def cmd_scatter(header, data, o="scatter.svg", logx=None, logy=None, offx='comb'):
+    if o in ["-", "stdout"]:
+        output_file = sys.stdout
+    else:
+        output_file = o
+
+    Y = [row[0] for row in data]
+    X = [row[1] for row in data]
+    min_y = min(Y)
+    max_y = max(Y)
+    min_x = min(X)
+    max_x = max(X)
+    y_numeric = True if isinstance(min_y, (int, float)) and isinstance(max_y, (int, float)) else False
+    x_numeric = True if isinstance(min_x, (int, float)) and isinstance(max_x, (int, float)) else False
+
+    if not y_numeric:
+        error("Y values must be numeric for scatter plot")
+
+    x_offset_max = None # no x offset
+    if offx is not None and offx not in ['', 'none', '0']:
+        x_offset_max = 0.05
+        if '-' in offx:
+            x_offset_max = float(offx.split('-', 1)[1])
+
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    visual_attributes = {
+        "marker": [ # fillable shapes
+            'o',  # circle
+            '^',  # triangle
+            's',  # square
+            'p',  # pentagon
+            '*',  # star
+            'P',  # plus
+            '<',  # triangle left
+            '>',  # triangle right
+            'v',  # triangle down
+            'D',  # diamond
+            'd',  # thin diamond
+        ],
+        "c": [ # color
+            'b',  # blue
+            'g',  # green
+            'c',  # cyan
+            'm',  # magenta
+            'y',  # yellow
+            'orange',
+            'purple',
+            'brown',
+            'pink',
+        ],
+        "s": [ # size
+                80,
+                160,
+                320,
+                480,
+        ],
+        "linewidths": [
+            1.0,
+            2.0,
+            4.0,
+            7.0,
+        ],
+        "edgecolors": [
+            'black',
+            'gray',
+        ],
+        "text-letter": [
+            'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+            'K', 'L',' M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+        ],
+        "text-number": [
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+        ],
+        "text-star": [
+            '*', '**',
+        ],
+        "text-hash": [
+            '#', '##',
+        ],
+        "text-plus": [
+            '+', '++',
+        ],
+    }
+
+    fig, ax = plt.subplots(figsize=(19.2, 10.8))
+    ax.set_ylabel(header[0])
+    ax.set_xlabel(header[1])
+    param_headers = header[2:]
+
+    # Prefer y axis starting at zero unless it would make
+    # the plot unreadable.
+    ylim_floor = 0
+    if logy is not None:
+        ax.set_yscale('log')
+        ylim_floor = min_y * 0.95 # don't start log scale at zero
+    if (min_y < 0) or (max_y <= 10 * min_y):
+        ylim_floor = (min_y - 0.05 * (max_y - min_y))
+    ylim_ceiling = max_y + 0.05 * (max_y - min_y)
+    ax.set_ylim(ylim_floor, ylim_ceiling)
+
+    uniqX = sorted(set(X))
+    if x_numeric and (len(uniqX) > 3):
+        xlim_floor = 0
+        if x_numeric and logx is not None:
+            ax.set_xscale('log')
+            xlim_floor = min_x * 0.95 # don't start log scale at zero
+        if (min_x < 0) or (max_x <= 10 * min_x):
+            xlim_floor = (min_x - 0.05 * (max_x - min_x))
+        xlim_ceiling = max_x + 0.05 * (max_x - min_x)
+        if x_offset_max is not None:
+            xlim_floor -= x_offset_max * (xlim_ceiling - xlim_floor)
+            xlim_ceiling += x_offset_max * (xlim_ceiling - xlim_floor)
+        ax.set_xlim(xlim_floor, xlim_ceiling)
+    else:
+        ax.set_xticks(range(len(uniqX)))
+        ax.set_xticklabels(uniqX)
+        x_numeric = False
+
+    # choose suitable visual or text attribute for each parameter
+    # based on parameters value set size
+    param_valueset = {
+        param_n: sorted(set(row[param_n] for row in data))
+        for param_n in range(2, len(header))
+    }
+    # adjust visual attribute colors to be large enough for the largest
+    # parameter value set
+    if param_valueset:
+        rgbs = (82,190,244)
+        rgbe = (238,80,108) #(238,173,108)
+        colors = max(len(values) for values in param_valueset.values())-1
+        visual_attributes["c"] = [
+            "#%x%x%x" % (int(rgbs[0]+i*(rgbe[0]-rgbs[0])/colors),
+                         int(rgbs[1]+i*(rgbe[1]-rgbs[1])/colors),
+                         int(rgbs[2]+i*(rgbe[2]-rgbs[2])/colors))
+            for i in range(colors+1)
+        ]
+
+    attr_setsize = {
+        attr: len(values)
+        for attr, values in visual_attributes.items()
+    }
+    param_attr = {}
+    used_attrs = set()
+    for param_n, values in sorted(param_valueset.items(), key=lambda item: -len(item[1])):
+        suitable_attrs = [
+            (attr, size) for attr, size in attr_setsize.items()
+            if size >= len(values) and attr not in used_attrs
+        ]
+        if not suitable_attrs:
+            error("too many unique values for parameter %d ('%s')" % (param_n - 1, header[param_n],))
+        # choose the attribute with the smallest size that fits
+        suitable_attrs.sort(key=lambda item: item[1])
+        chosen_attr = suitable_attrs[0][0]
+        param_attr[param_n] = chosen_attr
+        used_attrs.add(chosen_attr)
+
+    # default scatter params
+    default_scatter_params = {
+        attr: attr_values[0]
+        for attr, attr_values in visual_attributes.items()
+        if not attr.startswith("text-")
+    }
+
+    # do the plotting
+    for row in data:
+        y = row[0]
+
+        x = row[1]
+        if not x_numeric:
+            x = uniqX.index(x)
+
+        params = row[2:]
+        scatter_params = dict(default_scatter_params)
+        text_params = {}
+        value_indices = [] # [(param_2_value_index, param_2_max_value_index), ...]
+        # override default scatter params based on row parameters
+        for param_n, param_value in enumerate(params, start=2):
+            attr = param_attr[param_n]
+            attr_values = visual_attributes[attr]
+            value_index = param_valueset[param_n].index(param_value)
+            value_indices.append((value_index, len(param_valueset[param_n])))
+            if attr.startswith("text-"):
+                text_params[attr] = attr_values[value_index]
+            else:
+                scatter_params[attr] = attr_values[value_index]
+        # use alpha because many points may overlap
+        scatter_params["alpha"] = 0.7
+        # use gentle random x variation to reduce overplotting
+        if x_offset_max is not None:
+            if offx.startswith('random'):
+                x_offset = x_offset_max * (xlim_ceiling - xlim_floor) * (0.5 - random.random())
+                x += x_offset
+            elif offx.startswith('comb'):
+                # combine small offsets based on parameter value indices
+                combination_index = 0
+                multiplier = 1
+                for value_index, max_index in value_indices:
+                    combination_index += value_index * multiplier
+                    multiplier *= max_index
+                total_combinations = multiplier
+                comb_offset = x_offset_max * (combination_index / total_combinations - 0.5) * (xlim_ceiling - xlim_floor)
+                x += comb_offset
+
+        ax.scatter(
+            x, y,
+            **scatter_params
+        )
+        # add text annotations if any
+        text_y_delta = 0.02 * (ylim_ceiling - ylim_floor)
+        text_y_offset = 0
+        for text_attr, text_value in text_params.items():
+                ax.text(
+                        x, y + text_y_offset,
+                        text_value,
+                        fontsize=9,
+                        ha='center',
+                        va='center',
+                )
+                text_y_offset += text_y_delta
+    # create legend on used visual attributes
+    legend_elements = []
+    for param_n, attr in param_attr.items():
+        param_name = header[param_n]
+        param_values = param_valueset[param_n]
+        attr_values = visual_attributes[attr]
+        for value_index, param_value in enumerate(param_values):
+            attr_value = attr_values[value_index]
+            if attr.startswith("text-"):
+                legend_elements.append(
+                    Line2D(
+                        [0], [0],
+                        marker='$%s$' % (attr_value,),
+                        color='w',
+                        label="%s=%s" % (param_name, str(param_value),),
+                        markerfacecolor='gray',
+                        markersize=6,
+                        markeredgecolor='black',
+                        markeredgewidth=1.0,
+                    )
+                )
+            else:
+                legend_kwargs = {
+                    "marker": 'o',
+                    "color": 'w',
+                    "label": "%s=%s" % (param_name, str(param_value),),
+                    "markerfacecolor": 'gray',
+                    "markersize": 10,
+                    "markeredgecolor": 'black',
+                    "markeredgewidth": 1.0,
+                }
+                if attr == "s":
+                    legend_kwargs["markersize"] = math.sqrt(attr_value)
+                elif attr == "c":
+                    legend_kwargs["markerfacecolor"] = attr_value
+                elif attr == "linewidths":
+                    legend_kwargs["markeredgewidth"] = attr_value
+                elif attr == "edgecolors":
+                    legend_kwargs["markeredgecolor"] = attr_value
+                else:
+                    legend_kwargs[attr] = attr_value
+                legend_elements.append(
+                    Line2D([0], [0], **legend_kwargs)
+                )
+        ax.legend(
+                handles=legend_elements,
+                loc='best',
+                fontsize='small',
+                frameon=True,
+                framealpha=0.8,
+        )
+    plt.tight_layout()
+    plt.savefig(output_file, format='svg')
+
+def cmd_histogram(header, data, slots=10):
+    slots = int(slots)
+    y_name = header[0]
+    Y = [row[0] for row in data]
+    Y.sort()
+    min_y = Y[0]
+    max_y = Y[-1]
+    try:
+        slot_size = (max_y - min_y) / slots
+        slot_for = lambda y: int((y - min_y) / slot_size)
+        out_header = "count%s min_%s" % (opt_delimiter, y_name)
+        out_row = lambda slot, count: "%5d%s %6.3f" % (
+            count, opt_delimiter,
+            min_y + slot * slot_size)
+    except TypeError:
+        y_slot = {y: i for i, y in enumerate(sorted(set(Y)))}
+        slot_for = lambda y: y_slot[y]
+        out_header = "count%s %s" % (opt_delimiter, y_name)
+        slot_key_label = list(y_slot.keys())
+        out_row = lambda slot, count: "%5d%s %s" % (
+            count, opt_delimiter,
+            slot_key_label[slot])
+        slots = len(y_slot)
+    histogram = [0 for _ in range(slots)]
+    for y in Y:
+        slot_index = slot_for(y)
+        if slot_index == slots:
+            slot_index -= 1
+        histogram[slot_index] += 1
+    print(out_header)
+    for i in range(slots):
+        count = histogram[i]
+        print(out_row(i, count))
+
+cmds = {
+    "scatter": cmd_scatter,
+    "histogram": cmd_histogram,
+}
+
+if __name__ == "__main__":
+    import getopt
+    opt_command = None
+    opt_delimiter = ";"
+    opt_files = []
+
+    cmd_opts = {}
+
+    try:
+        opts, remainder = getopt.gnu_getopt(
+            sys.argv[1:], 'hd:',
+            ['help', 'delimiter=',
+             # histogram command options
+             'slots=',
+             # scatter command options
+             'o=',
+             'logx',
+             'logy',
+             'offx=',
+             ])
+    except Exception as e:
+        error(str(e))
+    for opt, arg in opts:
+        if opt in ["-h", "--help"]:
+            print(__doc__)
+            sys.exit(0)
+        elif opt in ["-d", "--delimiter"]:
+            opt_delimiter = arg
+        else:
+            cmd_opts[opt.lstrip("-")] = arg
+
+    if len(remainder) == 0:
+        error("command missing")
+
+    opt_command = remainder[0]
+    remainder = remainder[1:]
+
+    cmd_func = cmds.get(opt_command, None)
+    if cmd_func is None:
+        error("invalid command '%s'" % (opt_command,))
+
+    opt_files.extend(remainder)
+    if len(opt_files) == 0:
+        opt_files.append("-")
+
+    for fname in opt_files:
+        if fname == "-":
+            data_reader = csv.DictReader(sys.stdin, delimiter=opt_delimiter)
+        else:
+            data_reader = csv.DictReader(open(fname), delimiter=opt_delimiter)
+
+        (header, data) = header_data(data_reader)
+
+        cmd_func(header, data, **cmd_opts)
