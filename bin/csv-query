@@ -310,6 +310,18 @@ def str_to_list(s):
         raise ValueError("strings does not start with '['")
     return eval(ss)
 
+def autoconvert_int_float_str(value, fieldname=""):
+    global _enumstr
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return str(value)
+
 def columns_from(colspecs, fields, result):
     field_idx = {} # {field: index in fields}
     new_fields = []
@@ -424,6 +436,9 @@ if __name__ == "__main__":
             opt_post_mortem = True
         else:
             error("internal error: unhandled option '%s'" % (opt,))
+
+    if not opt_type:
+        opt_type.append(autoconvert_int_float_str)
 
     if opt_out_delimiter is None:
         opt_out_delimiter = opt_delimiter
