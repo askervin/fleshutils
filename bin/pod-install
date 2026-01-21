@@ -1,0 +1,90 @@
+#!/bin/bash
+
+set -x
+
+USAGE="
+Usage: pod-install /path/to/executable
+"
+tmpdir=/tmp/$(whoami)/pod-install
+
+error() {
+    echo "pod-install: (error) $*" >&2
+    exit 1
+}
+
+info() {
+    echo "# pod-install: (info) $*"
+}
+
+main() {
+    set -x
+    [[ -x "$executable" ]] || error "missing executable to run in a pod $USAGE"
+    command -v kubectl >/dev/null || error "missing kubectl"
+    command -v docker >/dev/null || error "missing docker"
+    command -v ctr >/dev/null || error "missing ctr"
+
+    executable_basename=$(basename $executable)
+    image="pod-install-$executable_basename"
+    image_fullname="docker.io/library/$image:latest"
+
+    if [[ "$uninstall" == "1" ]]; then
+        kubectl delete pod "$executable_basename" --now
+        ctr -n k8s.io image rm "$image_fullname"
+        docker image rm "$image_fullname"
+    fi
+
+    if [[ "$install" == "0" ]]; then
+        return 0
+    fi
+
+    mkdir -p "$tmpdir" 2>/dev/null
+    cd "$tmpdir" || error "failed to change to $tmpdir"
+    cp "$executable" ./ || error "failed to copy $executable to $tmpdir"
+    cat > Dockerfile <<EOF
+FROM busybox:latest
+
+COPY ./$executable_basename /usr/local/bin/$executable_basename
+
+ENTRYPOINT ["/usr/local/bin/$executable_basename"]
+EOF
+    docker build -t $image_fullname . || error "docker build failed"
+    docker save $image_fullname | ctr -n k8s.io image import - || error "failed import image to k8s"
+    cat > "$executable_basename.pod.yaml" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $executable_basename
+  labels:
+    app: $executable_basename-app
+spec:
+  containers:
+  - name: $executable_basename-container
+    image: $image_fullname
+    imagePullPolicy: Never
+EOF
+    kubectl create -f "$executable_basename.pod.yaml" || error "failed to kubectl create -f $tmpdir/$executable_basename.pod.yaml"
+}
+
+uninstall=0
+install=1
+while [[ $# -gt 1 ]]; do
+    case "$1" in
+        --uninstall)
+            uninstall=1
+            install=0
+            shift
+            ;;
+        --reinstall)
+            uninstall=1
+            install=1
+            shift
+            ;;
+        --*)
+            error "unknown option \"$1\", supported options: --uninstall --reinstall"
+            ;;
+    esac
+done
+
+executable="$1"
+
+main
