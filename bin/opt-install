@@ -1,0 +1,112 @@
+#!/bin/bash
+
+USAGE="Usage: opt-install [--use|--use-all] <golang>
+
+Examples:
+- Install latest golang version under /opt:
+  # opt-install golang
+
+- Use latest opt-installed golang:
+  # source <( opt-install --use golang )
+
+- Use latest versions of opt-installed anything:
+  # source <( opt-install --use-all )
+"
+
+error() {
+    echo "opt-install: (error) $*" >&2
+    exit 1
+}
+
+info() {
+    echo "# opt-install: (info) $*"
+}
+
+opt-install-golang() {
+    local latestver latestfn targetdir url
+
+    read latestver latestfn <<< $(
+        curl -s 'https://go.dev/dl/?mode=json' \
+            | jq -r '.[] | [ .version,  ( .files.[] | select( .filename | contains("linux-amd64.tar.gz")).filename ) ] | join(" ")' \
+            | sed 's/^go//' \
+            | sort -V \
+            | tail -n1 )
+
+    info "detected latest go version: $latestver"
+    targetdir=/opt/golang/$latestver
+    ( [[ -d $targetdir ]] && info "already installed in $targetdir" ) || {
+
+        mkdir -p "$targetdir" ||
+            error "creating target directory $targetdir failed"
+
+        url="https://go.dev/dl/$latestfn"
+
+        (
+            cd "$targetdir" &&
+                mkdir .opt-install &&
+                curl -OL "$url" &&
+                tar xf "$latestfn"
+        ) ||
+            error "failed to download and extract https://go.dev/dl/$targetfn in $targetdir"
+    }
+
+    echo "export PATH=$targetdir/go/bin:\$PATH" > "$targetdir/.opt-install/use-env"
+}
+
+opt-install-use-all() {
+    for d in /opt/*/*/.opt-install ; do
+        pkg=$(basename "$(dirname "$(dirname "$d")")")
+        opt-install-use "$pkg"
+    done
+}
+
+opt-install-use() {
+    local pkg=$1
+    local latest_pkgdir pkgdirs
+    pkgdirs=()
+    for d in /opt/"$pkg"/*/.opt-install ; do
+        [[ -d $d ]] || continue
+        pkgdirs+=("$(dirname "$d")")
+    done
+    [[ ${#pkgdirs[@]} -gt 0 ]] || error "cannot use $pkg: package not installed"
+    IFS=$'\n' latest_pkgdir=$(printf '%s\n' "${pkgdirs[@]}" | sort -V | tail -n1)
+    [[ -d $latest_pkgdir ]] || error "cannot use $pkg: package not installed"
+    info "using $pkg from $latest_pkgdir"
+    cat "$latest_pkgdir/.opt-install/use-env"
+}
+
+main() {
+    local use_only=0
+
+    if [[ $# -eq 0 ]]; then
+        error "no options provided, supported options: [use] golang, use-all"
+    fi
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            help|--help)
+                echo "$USAGE"
+                exit 0
+                ;;
+            --use)
+                use_only=1
+                shift
+                ;;
+            --use-all)
+                opt-install-use-all
+                shift
+                ;;
+            golang)
+                [[ $use_only -eq 1 ]] || opt-install-golang
+                opt-install-use golang
+                shift
+                ;;
+            *)
+            error "unknown option \"$1\", supported options: [use] golang, use-all"
+            ;;
+
+        esac
+    done
+}
+
+main "$@"
