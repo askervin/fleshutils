@@ -42,6 +42,7 @@ Command: scatter                     plot scatter diagram
 
   scatter command options:
       --o OUTPUT_FILE                output SVG file name, default is "scatter.svg".
+      --rangey [MIN],[MAX]           Y range to display, default is automatic based on data.
       --logx                         use logarithmic scale for X axis.
       --logy                         use logarithmic scale for Y axis.
       --offx OFFSET_MODE             X offset mode to reduce overplotting:
@@ -111,7 +112,7 @@ def header_data(data_reader):
     data = [[(datatype_int_float_str(row[f].strip(), f.strip()) if row[f].strip() != "" else MISSING_VALUE) for f in data_reader.fieldnames] for row in data_reader]
     return (header, data)
 
-def cmd_scatter(header, data, o="scatter.svg", logx=None, logy=None, offx='comb'):
+def cmd_scatter(header, data, o="scatter.svg", logx=None, logy=None, offx='comb', rangey=''):
     if o in ["-", "stdout"]:
         output_file = sys.stdout
     else:
@@ -119,8 +120,14 @@ def cmd_scatter(header, data, o="scatter.svg", logx=None, logy=None, offx='comb'
 
     Y = [row[0] for row in data]
     X = [row[1] for row in data]
-    min_y = min(Y)
-    max_y = max(Y)
+    if rangey and ',' in rangey:
+        try:
+            min_y, max_y = map(float, rangey.split(',', 1))
+        except ValueError:
+            error("invalid --rangey '%s', expected format is 'MIN,MAX'" % (rangey,))
+    else:
+        min_y = min(Y)
+        max_y = max(Y)
     min_x = min(X)
     max_x = max(X)
     y_numeric = True if isinstance(min_y, (int, float)) and isinstance(max_y, (int, float)) else False
@@ -203,6 +210,8 @@ def cmd_scatter(header, data, o="scatter.svg", logx=None, logy=None, offx='comb'
 
     # Prefer y axis starting at zero unless it would make
     # the plot unreadable.
+    if logy is None and min_y > 0 and (max_y - min_y) / min_y > 0.25:
+        min_y = 0
     ylim_floor = 0
     if logy is not None:
         ax.set_yscale('log')
@@ -226,6 +235,8 @@ def cmd_scatter(header, data, o="scatter.svg", logx=None, logy=None, offx='comb'
             xlim_ceiling += x_offset_max * (xlim_ceiling - xlim_floor)
         ax.set_xlim(xlim_floor, xlim_ceiling)
     else:
+        xlim_floor = 0
+        xlim_ceiling = 10
         ax.set_xticks(range(len(uniqX)))
         ax.set_xticklabels(uniqX)
         x_numeric = False
@@ -443,6 +454,7 @@ if __name__ == "__main__":
              'logx',
              'logy',
              'offx=',
+             'rangey=',
              ])
     except Exception as e:
         error(str(e))
