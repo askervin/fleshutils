@@ -30,6 +30,8 @@ Usage: visualsets [options] [FILE[>|CMD]...]
 
 Options:
   -h, --help              print help.
+  --calc                  calculator mode: print the last set in the stack
+                          without visualization in list format
   -c, --column COL        visualize only column COL from input
   -s, --silent            ignore parse errors
   -l, --list [LABEL=]SET  visualise set in list format, optionally with LABEL
@@ -41,10 +43,12 @@ Options:
   --group-zero            like --group but print no files/labels, only contents
   -i, --ignore-empty      silently skip empty files and sets
   --short                 print label and visualisation on the same line
-  -U, --union             visualise union of sets
-  -I, --intersection      visualise intersection of sets
+Calculator options using Reverse Polish notation (RPN) in command line:
+  -U, --union             visualise union of sets in the stack
+  -I, --intersection      visualise intersection of sets in the stack
   -D, --difference        substract remaining sets from the first set
   -C, --count=N           visualise elements that appeared at least in N sets
+  -N, --number-of-elements calculate number of elements in the last set
 
 Examples:
   visualsets --list all=0-127 /sys/devices/system/node/node*/cpulist
@@ -105,10 +109,10 @@ def listset2bits(s):
     for comma in s.split(","):
         rng = comma.split("-")
         if len(rng) == 1:
-            bits += 1 << int(rng[0])
+            bits |= 1 << int(rng[0])
             continue
         for i in range(int(rng[0]), int(rng[1])+1):
-            bits += 1 << i
+            bits |= 1 << i
     return bits
 
 # maskset2bits parses mask set syntax (like "00ff00") into bitvector int
@@ -186,7 +190,7 @@ def output(s):
     sys.stdout.flush()
 
 # output_set parses a set from data and writes it into output
-def output_set(data, label=None, parser=None, raw=False, mode="files", short=False, ignore_empty=False, silent=False, set_fmt=""):
+def output_set(data, label=None, parser=None, raw=False, mode="files", short=False, ignore_empty=False, silent=False, set_fmt="", datatype="set"):
     if (data == "" or data == 0) and ignore_empty:
         return
 
@@ -221,15 +225,17 @@ def output_set(data, label=None, parser=None, raw=False, mode="files", short=Fal
             out_label = out_label + " " + bits2listset(data)
     if short and "\n" in out_label:
         out_label = out_label.replace("\n", " ")
-    if bits > 0:
+    if datatype == "set" and bits > 0:
         visualset = set_fmt % {
             "setid": setid,
             "bitmap": bitmap2braille(bits2bitmap(bits, height=opt_height)),
             "count": count,
             "listset": listset,
         }
-    else:
+    elif datatype == "set":
         visualset = ""
+    else:
+        visualset = "datatype:%s" % (datatype,)
     all_output.append((out_label, bits, visualset))
     if mode == "files":
         output(out_label + visualset + "\n")
@@ -297,6 +303,13 @@ def output_operation(operation, remove_counted=False, **passthrough_opts):
         if remove_counted:
             all_output = []
         output_set(data, label="elements in at least %d of [0..%d]" % (operation[1], last_counted), **passthrough_opts)
+    elif operation == "number-of-elements":
+        bits = all_output[-1][1]
+        bit_count = bits2count(bits)
+        last_counted = len(all_output) - 1
+        if remove_counted:
+            all_output = all_output[:-1]
+        output_set(bit_count, label="number of elements in [%d]" % (last_counted,), datatype="int", **passthrough_opts)
     else:
         error("unknown operation: %s" % (operation,))
     if not remove_counted:
@@ -319,16 +332,18 @@ if __name__ == "__main__":
     all_output = []
     try:
         opts, remainder = getopt.gnu_getopt(
-            sys.argv[1:], 'hc:sy:l:m:p:rgiUIDC:',
-            ['help', 'height=', 'list=', 'mask=', 'parser=', 'column=', 'silent',
+            sys.argv[1:], 'hc:sy:l:m:p:rgiUIDNC:',
+            ['help', 'height=', 'list=', 'mask=', 'parser=', 'calc', 'column=', 'silent',
              'raw', 'group', 'group-one', 'group-zero', 'short', 'ignore-empty',
-             'union', 'intersection', 'difference', 'count='])
+             'union', 'intersection', 'difference', 'count=', 'number-of-elements'])
     except Exception as e:
         error(str(e))
     for opt, arg in opts:
         if opt in ["-h", "--help"]:
             print(__doc__)
             sys.exit(0)
+        elif opt in ["--calc"]:
+            opts_output["mode"] = "calc"
         elif opt in ["-c", "--column"]:
             opts_output["mode"] = "column"
             try:
@@ -388,6 +403,11 @@ if __name__ == "__main__":
                 output_operation(("count", int(arg)), remove_counted=True, **opts_output)
             else:
                 opt_operations.append(("count", int(arg)))
+        elif opt in ["-N", "--number-of-elements"]:
+            if all_output:
+                output_operation("number-of-elements", remove_counted=True, **opts_output)
+            else:
+                opt_operations.append("number-of-elements")
         else:
             error("internal error: unhandled option '%s'" % (opt,))
 
@@ -423,3 +443,13 @@ if __name__ == "__main__":
 
     if opts_output.get("mode", "") == "group":
         output_group(**opts_group)
+    elif opts_output.get("mode", "") == "calc":
+        if all_output:
+            _, data, visualset_or_datatype = all_output[-1]
+            if visualset_or_datatype == "datatype:int":
+                output(str(data))
+            else: # data is a set
+                output(bits2listset(data))
+        else:
+            output("<calculator: no results>")
+        output("\n")
