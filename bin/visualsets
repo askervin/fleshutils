@@ -32,6 +32,7 @@ Options:
   -h, --help              print help.
   --calc                  calculator mode: print the last set in the stack
                           without visualization in list format
+  --out-enum              enumerate set members instead of list format output
   -c, --column COL        visualize only column COL from input
   -s, --silent            ignore parse errors
   -l, --list [LABEL=]SET  visualise set in list format, optionally with LABEL
@@ -44,10 +45,10 @@ Options:
   -i, --ignore-empty      silently skip empty files and sets
   --short                 print label and visualisation on the same line
 Calculator options using Reverse Polish notation (RPN) in command line:
-  -U, --union             visualise union of sets in the stack
-  -I, --intersection      visualise intersection of sets in the stack
-  -D, --difference        substract remaining sets from the first set
-  -C, --count=N           visualise elements that appeared at least in N sets
+  -U, --union             union of sets in the stack
+  -I, --intersection      intersection of sets in the stack
+  -D, --difference        substract remaining sets from the first set in the stack
+  -C, --count=N           set of elements that appeared at least in N sets in the stack
   -N, --number-of-elements calculate number of elements in the last set
 
 Examples:
@@ -74,6 +75,8 @@ coord2brbit = [
 
 # bits2listset returns the list representation of a set
 def bits2listset(bits):
+    if opt_listset_fmt == "enum":
+        return ",".join(str(n) for n in range(0, bits.bit_length()) if bits & (1 << n) != 0)
     n = 0
     range_start, range_end = -1, -1
     ranges = []
@@ -322,6 +325,7 @@ if __name__ == "__main__":
     import getopt
     opt_height = 4
     opt_label_fmt = "[%(setid)s] %(label)s n=%(count)s l=%(listset)s \n"
+    opt_listset_fmt = "listset"
     opt_parser = None
     opt_operations = []
     opt_column = None
@@ -333,7 +337,7 @@ if __name__ == "__main__":
     try:
         opts, remainder = getopt.gnu_getopt(
             sys.argv[1:], 'hc:sy:l:m:p:rgiUIDNC:',
-            ['help', 'height=', 'list=', 'mask=', 'parser=', 'calc', 'column=', 'silent',
+            ['help', 'height=', 'list=', 'mask=', 'parser=', 'calc', 'enum', 'column=', 'silent',
              'raw', 'group', 'group-one', 'group-zero', 'short', 'ignore-empty',
              'union', 'intersection', 'difference', 'count=', 'number-of-elements'])
     except Exception as e:
@@ -344,6 +348,8 @@ if __name__ == "__main__":
             sys.exit(0)
         elif opt in ["--calc"]:
             opts_output["mode"] = "calc"
+        elif opt in ["--enum"]:
+            opt_listset_fmt = "enum"
         elif opt in ["-c", "--column"]:
             opts_output["mode"] = "column"
             try:
