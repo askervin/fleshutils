@@ -196,7 +196,7 @@ def cmd_scatter(header, data, o="scatter.svg", logx=None, logy=None, offx='comb'
             '*', '**',
         ],
         "text-hash": [
-            '#', '##',
+            'H', 'HH', # hash causes text error
         ],
         "text-plus": [
             '+', '++',
@@ -253,6 +253,8 @@ def cmd_scatter(header, data, o="scatter.svg", logx=None, logy=None, offx='comb'
         rgbs = (82,190,244)
         rgbe = (238,80,108) #(238,173,108)
         colors = max(len(values) for values in param_valueset.values())-1
+        if colors == 0:
+            colors = 1
         visual_attributes["c"] = [
             "#%x%x%x" % (int(rgbs[0]+i*(rgbe[0]-rgbs[0])/colors),
                          int(rgbs[1]+i*(rgbe[1]-rgbs[1])/colors),
