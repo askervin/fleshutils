@@ -112,6 +112,10 @@ def header_data(data_reader):
     data = [[(datatype_int_float_str(row[f].strip(), f.strip()) if row[f].strip() != "" else MISSING_VALUE) for f in data_reader.fieldnames] for row in data_reader]
     return (header, data)
 
+# TODO:
+def cmd_scatter_unicode(header, data, o="scatter.svg", logx=None, logy=None, offx='comb', rangey=''):
+    raise NotImplemented('a placeholder for scatter graphics like braille and "\U0001cd14" for dense points in terminal')
+
 def cmd_scatter(header, data, o="scatter.svg", logx=None, logy=None, offx='comb', rangey=''):
     if o in ["-", "stdout"]:
         output_file = sys.stdout
@@ -397,6 +401,11 @@ def cmd_scatter(header, data, o="scatter.svg", logx=None, logy=None, offx='comb'
         )
     plt.tight_layout()
     plt.savefig(output_file, format='svg')
+
+# TODO
+def cmd_historgram_unicode(header, data, slots=10):
+    raise NotImplemented("a placeholder for bar graphics like for bar in range(0x2581,0x2589): ▁ ▂ ▃ ▄ ▅ ▆ ▇ █ in terminal")
+
 
 def cmd_histogram(header, data, slots=10):
     slots = int(slots)
