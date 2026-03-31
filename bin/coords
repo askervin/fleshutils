@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2026 Antti Kervinen <antti.kervinen@gmail.com>
+#
+# License (MIT):
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""coords - Interactive Unicode coordinate system for the terminal.
+
+Reads Python commands from stdin and renders XY plots using Braille
+characters for smooth lines and Unicode symbols for points.
+
+In the exec environment:
+  c = new_coords(name='title', minxy=(x0,y0), maxxy=(x1,y1))
+  c.new_line(name='label', xys=[(x,y), ...])
+  c.new_point(name='label', xy=(x,y))
+  c.new_label(name='label', text='text', xy=(x,y))
+  c.render(terminal)
+
+Objects returned by new_*() have read/write attributes (name, xys, xy, text).
+Look up existing objects with c.line(name=...), c.point(name=...), c.label(name=...):
+  c.line(name='label').xys.append((x_new, y_new))
+  c.point(name='label').xy = (x_new, y_new)
+  c.label(name='label').text = 'new text'
+"""
+
+import sys
+import math
+import shutil
+
+try:
+    import readline
+except ImportError:
+    pass
+
+# Braille: each character cell is a 2-wide x 4-tall dot grid.
+# Map (dx, dy) within a cell to the corresponding Unicode bit.
+_BRAILLE_BASE = 0x2800
+_BRAILLE_BIT = {
+    (0, 0): 0x01, (0, 1): 0x02, (0, 2): 0x04, (0, 3): 0x40,
+    (1, 0): 0x08, (1, 1): 0x10, (1, 2): 0x20, (1, 3): 0x80,
+}
+
+_SYMBOLS = '●◆■▲★◉⬢✦♦▶'
+_DARK_PALETTE = [
+    '\033[38;5;204m',   # pink-red
+    '\033[38;5;114m',   # green
+    '\033[38;5;75m',    # blue
+    '\033[38;5;215m',   # orange
+    '\033[38;5;176m',   # magenta
+    '\033[38;5;80m',    # teal
+    '\033[38;5;222m',   # gold
+    '\033[38;5;147m',   # lavender
+]
+_LIGHT_PALETTE = [
+    '\033[38;5;160m',   # dark red
+    '\033[38;5;28m',    # dark green
+    '\033[38;5;25m',    # dark blue
+    '\033[38;5;166m',   # burnt orange
+    '\033[38;5;127m',   # dark magenta
+    '\033[38;5;30m',    # dark teal
+    '\033[38;5;136m',   # dark gold
+    '\033[38;5;97m',    # dark lavender
+]
+_PALETTES = {
+    'dark':  _DARK_PALETTE,
+    'light': _LIGHT_PALETTE,
+    'bw':    [''] * 8,
+}
+_DIM = '\033[2m'
+_BOLD = '\033[1m'
+_RST = '\033[0m'
+
+
+def _fmt(v):
+    """Format a number for axis labels."""
+    if v == 0:
+        return '0'
+    if v == int(v) and abs(v) < 1e7:
+        return str(int(v))
+    return f'{v:.4g}'
+
+
+def _nice_ticks(lo, hi, n):
+    """Generate nicely rounded tick values between lo and hi."""
+    if hi <= lo:
+        return [lo]
+    raw = (hi - lo) / max(n - 1, 1)
+    mag = 10 ** math.floor(math.log10(raw))
+    norm = raw / mag
+    if norm <= 1.5:
+        step = mag
+    elif norm <= 3.5:
+        step = 2 * mag
+    elif norm <= 7.5:
+        step = 5 * mag
+    else:
+        step = 10 * mag
+    ticks = []
+    v = math.ceil(lo / step) * step
+    while v <= hi + step * 1e-9:
+        ticks.append(round(v, 10))
+        v += step
+    return ticks or [lo, hi]
+
+
+class Line:
+    def __init__(self, name, xys, color):
+        self.name = name
+        self.xys = xys
+        self.color = color
+
+
+class Point:
+    def __init__(self, name, xy, sym, color, text=''):
+        self.name = name
+        self.xy = xy
+        self.sym = sym
+        self.color = color
+        self.text = text
+
+
+class Label:
+    def __init__(self, name, text, xy):
+        self.name = name
+        self.text = text
+        self.xy = xy
+
+
+class CoordSystem:
+    def __init__(self, name, minxy, maxxy):
+        self.name = name
+        self.x_min, self.y_min = float(minxy[0]), float(minxy[1])
+        self.x_max, self.y_max = float(maxxy[0]), float(maxxy[1])
+        self.lines = []
+        self.points = []
+        self.labels = []
+        self._prev_h = 0
+        self._ci = 0
+        self._theme = 'dark'
+
+    def _palette(self):
+        return _PALETTES[self._theme]
+
+    def _color(self):
+        c = self._palette()[self._ci % len(self._palette())]
+        self._ci += 1
+        return c
+
+    def _recolor(self):
+        """Reassign colors to all objects from the current palette."""
+        pal = self._palette()
+        for i, obj in enumerate(self.lines + self.points):
+            obj.color = pal[i % len(pal)]
+
+    def dark(self):
+        self._theme = 'dark'
+        self._recolor()
+
+    def light(self):
+        self._theme = 'light'
+        self._recolor()
+
+    def bw(self):
+        self._theme = 'bw'
+        self._recolor()
+
+    def _find(self, collection, name, kind):
+        for obj in collection:
+            if obj.name == name:
+                return obj
+        raise KeyError(f'{kind} {name!r} not found')
+
+    def line(self, name):
+        return self._find(self.lines, name, 'line')
+
+    def point(self, name):
+        return self._find(self.points, name, 'point')
+
+    def label(self, name):
+        return self._find(self.labels, name, 'label')
+
+    def new_line(self, name, xys):
+        obj = Line(name=name, xys=list(xys), color=self._color())
+        self.lines.append(obj)
+        return obj
+
+    def new_point(self, name, xy, text=''):
+        sym = _SYMBOLS[len(self.points) % len(_SYMBOLS)]
+        obj = Point(name=name, xy=xy, sym=sym, color=self._color(), text=text)
+        self.points.append(obj)
+        return obj
+
+    def new_label(self, name, text, xy):
+        obj = Label(name=name, text=text, xy=xy)
+        self.labels.append(obj)
+        return obj
+
+    def render(self, terminal):
+        ts = shutil.get_terminal_size((80, 24))
+
+        # Compute nice tick values
+        yt = _nice_ticks(self.y_min, self.y_max, max(3, min(8, ts.lines // 5)))
+        xt = _nice_ticks(self.x_min, self.x_max, max(3, min(10, ts.columns // 12)))
+
+        ylabels = {v: _fmt(v) for v in yt}
+        yw = max(len(s) for s in ylabels.values()) + 1
+
+        pw = max(10, ts.columns - yw - 2)      # plot width  (chars)
+        ph = max(5, ts.lines - 5)               # plot height (chars)
+        sw, sh = pw * 2, ph * 4                 # sub-pixel dims
+        xr = self.x_max - self.x_min or 1.0
+        yr = self.y_max - self.y_min or 1.0
+
+        # In bw mode, suppress all ANSI formatting
+        is_bw = self._theme == 'bw'
+        dim = '' if is_bw else _DIM
+        bold = '' if is_bw else _BOLD
+        rst = '' if is_bw else _RST
+
+        # Braille bitmask grid and per-cell color
+        brl = [[0] * pw for _ in range(ph)]
+        brc = [[None] * pw for _ in range(ph)]
+        # Character overlay (symbol/label on top of braille)
+        ovr = [[None] * pw for _ in range(ph)]
+
+        def d2s(x, y):
+            """Data coords -> sub-pixel coords."""
+            return ((x - self.x_min) / xr * (sw - 1),
+                    (self.y_max - y) / yr * (sh - 1))
+
+        def d2c(x, y):
+            """Data coords -> character cell coords."""
+            return (int(round((x - self.x_min) / xr * (pw - 1))),
+                    int(round((self.y_max - y) / yr * (ph - 1))))
+
+        def dot(sx, sy, clr=None):
+            si, sj = int(round(sx)), int(round(sy))
+            if 0 <= si < sw and 0 <= sj < sh:
+                cx, dx = divmod(si, 2)
+                cy, dy = divmod(sj, 4)
+                brl[cy][cx] |= _BRAILLE_BIT[(dx, dy)]
+                if clr:
+                    brc[cy][cx] = clr
+
+        def seg(x0, y0, x1, y1, clr):
+            sx0, sy0 = d2s(x0, y0)
+            sx1, sy1 = d2s(x1, y1)
+            n = max(int(math.hypot(sx1 - sx0, sy1 - sy0) * 2), 1)
+            for i in range(n + 1):
+                t = i / n
+                dot(sx0 + (sx1 - sx0) * t, sy0 + (sy1 - sy0) * t, clr)
+
+        # Draw origin axes if they fall within the range (dimmed)
+        ac = dim + '\033[37m' if not is_bw else ''
+        if self.y_min < 0 < self.y_max:
+            _, sy = d2s(0, 0)
+            for i in range(sw):
+                dot(i, sy, ac)
+        if self.x_min < 0 < self.x_max:
+            sx, _ = d2s(0, 0)
+            for j in range(sh):
+                dot(sx, j, ac)
+
+        # Draw lines (over axes so their color takes priority)
+        for ld in self.lines:
+            pts = ld.xys
+            for i in range(len(pts) - 1):
+                seg(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], ld.color)
+
+        # Place points (symbol + optional text in point color)
+        for pt in self.points:
+            cx, cy = d2c(*pt.xy)
+            if 0 <= cx < pw and 0 <= cy < ph:
+                ovr[cy][cx] = (pt.sym, pt.color)
+                for i, ch in enumerate(pt.text):
+                    if 0 <= cx + 1 + i < pw:
+                        ovr[cy][cx + 1 + i] = (ch, pt.color)
+
+        # Place labels
+        for lb in self.labels:
+            cx, cy = d2c(*lb.xy)
+            for i, ch in enumerate(lb.text):
+                if 0 <= cx + i < pw and 0 <= cy < ph:
+                    ovr[cy][cx + i] = (ch, None)
+
+        # Map tick values to row/col indices
+        ytr = {}
+        for v, label in ylabels.items():
+            r = int(round((self.y_max - v) / yr * (ph - 1)))
+            if 0 <= r < ph:
+                ytr[r] = label
+        xtc = {}
+        for v in xt:
+            c = int(round((v - self.x_min) / xr * (pw - 1)))
+            if 0 <= c < pw:
+                xtc[c] = _fmt(v)
+
+        # Assemble output
+        out = [f'{bold} {self.name}{rst}']
+
+        for r in range(ph):
+            if r in ytr:
+                yl = ytr[r].rjust(yw - 1) + ' ┤'
+            else:
+                yl = ' ' * (yw - 1) + ' │'
+            cells = []
+            for c in range(pw):
+                if ovr[r][c]:
+                    ch, clr = ovr[r][c]
+                    cells.append(f'{clr}{ch}{rst}' if clr else ch)
+                elif brl[r][c]:
+                    ch = chr(_BRAILLE_BASE + brl[r][c])
+                    clr = brc[r][c]
+                    cells.append(f'{clr}{ch}{rst}' if clr else f'{dim}{ch}{rst}')
+                else:
+                    cells.append(' ')
+            out.append(yl + ''.join(cells))
+
+        # Bottom border with tick marks
+        border = ['┴' if c in xtc else '─' for c in range(pw)]
+        out.append(' ' * (yw - 1) + ' └' + ''.join(border))
+
+        # X-axis labels
+        xl = [' '] * pw
+        for c, label in xtc.items():
+            start = c - len(label) // 2
+            for i, ch in enumerate(label):
+                p = start + i
+                if 0 <= p < pw:
+                    xl[p] = ch
+        out.append(' ' * (yw + 1) + ''.join(xl))
+
+        # Legend
+        leg = []
+        for ld in self.lines:
+            leg.append(f"  {ld.color}━━ {ld.name}{rst}")
+        for pt in self.points:
+            leg.append(f"  {pt.color}{pt.sym}  {pt.name}{rst}")
+        if leg:
+            out.append(''.join(leg))
+
+        # Erase previous render, then print
+        if self._prev_h > 0:
+            terminal.write(f'\033[{self._prev_h}A\033[J')
+        terminal.write('\n'.join(out) + '\n')
+        terminal.flush()
+        self._prev_h = len(out)
+
+
+def new_coords(name='coords', minxy=(0, 0), maxxy=(10, 10)):
+    """Create a new coordinate system."""
+    return CoordSystem(name, minxy, maxxy)
+
+
+def main():
+    terminal = sys.stdout
+    env = {'new_coords': new_coords, 'terminal': terminal, 'math': math}
+    interactive = sys.stdin.isatty()
+    prompt = 'coords> ' if interactive else ''
+
+    if interactive:
+        sys.stderr.write(
+            'coords: type Python commands '
+            '(new_coords, c.new_line, c.new_point, c.new_label, c.render)\n')
+        sys.stderr.flush()
+
+    buf = []
+    while True:
+        try:
+            if prompt:
+                sys.stderr.write('...     ' if buf else prompt)
+                sys.stderr.flush()
+            line = input()
+            if buf:
+                if line.strip() == '':
+                    code = '\n'.join(buf)
+                    buf.clear()
+                    exec(compile(code, '<input>', 'exec'), env)
+                else:
+                    buf.append(line)
+            elif line.strip() == '':
+                continue
+            elif line.rstrip().endswith(':') or line.rstrip().endswith('\\'):
+                buf.append(line.rstrip('\\'))
+            else:
+                exec(compile(line, '<input>', 'exec'), env)
+        except EOFError:
+            if buf:
+                exec(compile('\n'.join(buf), '<input>', 'exec'), env)
+            break
+        except KeyboardInterrupt:
+            buf.clear()
+            if interactive:
+                sys.stderr.write('\n')
+            else:
+                break
+        except Exception as e:
+            buf.clear()
+            sys.stderr.write(f'Error: {e}\n')
+            sys.stderr.flush()
+
+
+if __name__ == '__main__':
+    main()
