@@ -169,7 +169,7 @@ class Label(_Tracked):
 
 class CoordSystem:
     # Attributes that don't mark the coord system as dirty
-    _INTERNAL = {'_prev_h', '_ci', '_dirty', 'autorender'}
+    _INTERNAL = {'_prev_h', '_dirty', 'autorender', '_name_styles', '_next_ci', '_next_si'}
 
     def __init__(self, name, minxy, maxxy, autorender=None):
         self.name = name
@@ -179,7 +179,9 @@ class CoordSystem:
         self.points = []
         self.labels = []
         self._prev_h = 0
-        self._ci = 0
+        self._name_styles = {}   # name -> {'ci': int, 'si': int}
+        self._next_ci = 0        # next color index
+        self._next_si = 0        # next symbol index
         self._theme = 'dark'
         self._dirty = False
         self.autorender = autorender
@@ -192,16 +194,30 @@ class CoordSystem:
     def _palette(self):
         return _PALETTES[self._theme]
 
-    def _color(self):
-        c = self._palette()[self._ci % len(self._palette())]
-        self._ci += 1
-        return c
+    def _style_for(self, name, need_sym=False):
+        """Return (color, sym_or_None) for a given object name, reusing if seen."""
+        ns = self._name_styles
+        if name in ns:
+            entry = ns[name]
+        else:
+            entry = {'ci': self._next_ci}
+            object.__setattr__(self, '_next_ci', self._next_ci + 1)
+            ns[name] = entry
+        if need_sym and 'si' not in entry:
+            entry['si'] = self._next_si
+            object.__setattr__(self, '_next_si', self._next_si + 1)
+        pal = self._palette()
+        color = pal[entry['ci'] % len(pal)]
+        sym = _SYMBOLS[entry['si'] % len(_SYMBOLS)] if 'si' in entry else None
+        return color, sym
 
     def _recolor(self):
         """Reassign colors to all objects from the current palette."""
         pal = self._palette()
-        for i, obj in enumerate(self.lines + self.points):
-            obj.color = pal[i % len(pal)]
+        ns = self._name_styles
+        for obj in self.lines + self.points:
+            if obj.name in ns:
+                obj.color = pal[ns[obj.name]['ci'] % len(pal)]
 
     def dark(self):
         self._theme = 'dark'
@@ -231,13 +247,14 @@ class CoordSystem:
         return self._find(self.labels, name, 'label')
 
     def new_line(self, name, xys):
-        obj = Line(self, name=name, xys=list(xys), color=self._color())
+        color, _ = self._style_for(name)
+        obj = Line(self, name=name, xys=list(xys), color=color)
         self.lines.append(obj)
         return obj
 
     def new_point(self, name, xy, text=''):
-        sym = _SYMBOLS[len(self.points) % len(_SYMBOLS)]
-        obj = Point(self, name=name, xy=xy, sym=sym, color=self._color(), text=text)
+        color, sym = self._style_for(name, need_sym=True)
+        obj = Point(self, name=name, xy=xy, sym=sym, color=color, text=text)
         self.points.append(obj)
         return obj
 
@@ -381,12 +398,17 @@ class CoordSystem:
                     xl[p] = ch
         out.append(' ' * (yw + 1) + ''.join(xl))
 
-        # Legend
+        # Legend (deduplicated by name)
         leg = []
+        seen = set()
         for ld in self.lines:
-            leg.append(f"  {ld.color}━━ {ld.name}{rst}")
+            if ld.name not in seen:
+                seen.add(ld.name)
+                leg.append(f"  {ld.color}━━ {ld.name}{rst}")
         for pt in self.points:
-            leg.append(f"  {pt.color}{pt.sym}  {pt.name}{rst}")
+            if pt.name not in seen:
+                seen.add(pt.name)
+                leg.append(f"  {pt.color}{pt.sym}  {pt.name}{rst}")
         if leg:
             out.append(''.join(leg))
 
