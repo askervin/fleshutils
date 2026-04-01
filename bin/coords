@@ -41,6 +41,12 @@ Look up existing objects with c.line(name=...), c.point(name=...), c.label(name=
   c.line(name='label').xys.append((x_new, y_new))
   c.point(name='label').xy = (x_new, y_new)
   c.label(name='label').text = 'new text'
+
+Auto-render on changes:
+  c = new_coords(..., autorender=terminal)
+  c.new_point(name='p', xy=(1,2))  # renders automatically
+
+Color themes: c.dark(), c.light(), c.bw()
 """
 
 import sys
@@ -123,15 +129,29 @@ def _nice_ticks(lo, hi, n):
     return ticks or [lo, hi]
 
 
-class Line:
-    def __init__(self, name, xys, color):
+class _Tracked:
+    """Base for objects that notify their parent CoordSystem on changes."""
+    def __init__(self, coord_system):
+        object.__setattr__(self, '_cs', coord_system)
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        cs = object.__getattribute__(self, '_cs')
+        if cs is not None:
+            object.__setattr__(cs, '_dirty', True)
+
+
+class Line(_Tracked):
+    def __init__(self, coord_system, name, xys, color):
+        super().__init__(coord_system)
         self.name = name
         self.xys = xys
         self.color = color
 
 
-class Point:
-    def __init__(self, name, xy, sym, color, text=''):
+class Point(_Tracked):
+    def __init__(self, coord_system, name, xy, sym, color, text=''):
+        super().__init__(coord_system)
         self.name = name
         self.xy = xy
         self.sym = sym
@@ -139,15 +159,19 @@ class Point:
         self.text = text
 
 
-class Label:
-    def __init__(self, name, text, xy):
+class Label(_Tracked):
+    def __init__(self, coord_system, name, text, xy):
+        super().__init__(coord_system)
         self.name = name
         self.text = text
         self.xy = xy
 
 
 class CoordSystem:
-    def __init__(self, name, minxy, maxxy):
+    # Attributes that don't mark the coord system as dirty
+    _INTERNAL = {'_prev_h', '_ci', '_dirty', 'autorender'}
+
+    def __init__(self, name, minxy, maxxy, autorender=None):
         self.name = name
         self.x_min, self.y_min = float(minxy[0]), float(minxy[1])
         self.x_max, self.y_max = float(maxxy[0]), float(maxxy[1])
@@ -157,6 +181,13 @@ class CoordSystem:
         self._prev_h = 0
         self._ci = 0
         self._theme = 'dark'
+        self._dirty = False
+        self.autorender = autorender
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        if name not in self._INTERNAL:
+            object.__setattr__(self, '_dirty', True)
 
     def _palette(self):
         return _PALETTES[self._theme]
@@ -200,18 +231,18 @@ class CoordSystem:
         return self._find(self.labels, name, 'label')
 
     def new_line(self, name, xys):
-        obj = Line(name=name, xys=list(xys), color=self._color())
+        obj = Line(self, name=name, xys=list(xys), color=self._color())
         self.lines.append(obj)
         return obj
 
     def new_point(self, name, xy, text=''):
         sym = _SYMBOLS[len(self.points) % len(_SYMBOLS)]
-        obj = Point(name=name, xy=xy, sym=sym, color=self._color(), text=text)
+        obj = Point(self, name=name, xy=xy, sym=sym, color=self._color(), text=text)
         self.points.append(obj)
         return obj
 
     def new_label(self, name, text, xy):
-        obj = Label(name=name, text=text, xy=xy)
+        obj = Label(self, name=name, text=text, xy=xy)
         self.labels.append(obj)
         return obj
 
@@ -367,9 +398,17 @@ class CoordSystem:
         self._prev_h = len(out)
 
 
-def new_coords(name='coords', minxy=(0, 0), maxxy=(10, 10)):
+def new_coords(name='coords', minxy=(0, 0), maxxy=(10, 10), autorender=None):
     """Create a new coordinate system."""
-    return CoordSystem(name, minxy, maxxy)
+    return CoordSystem(name, minxy, maxxy, autorender=autorender)
+
+
+def _autorender(env):
+    """Auto-render any dirty CoordSystem objects that have autorender set."""
+    for obj in env.values():
+        if isinstance(obj, CoordSystem) and obj._dirty and obj.autorender:
+            obj.render(obj.autorender)
+            object.__setattr__(obj, '_dirty', False)
 
 
 def main():
@@ -396,6 +435,7 @@ def main():
                     code = '\n'.join(buf)
                     buf.clear()
                     exec(compile(code, '<input>', 'exec'), env)
+                    _autorender(env)
                 else:
                     buf.append(line)
             elif line.strip() == '':
@@ -404,9 +444,11 @@ def main():
                 buf.append(line.rstrip('\\'))
             else:
                 exec(compile(line, '<input>', 'exec'), env)
+                _autorender(env)
         except EOFError:
             if buf:
                 exec(compile('\n'.join(buf), '<input>', 'exec'), env)
+                _autorender(env)
             break
         except KeyboardInterrupt:
             buf.clear()
