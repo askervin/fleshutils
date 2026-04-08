@@ -95,6 +95,14 @@ prefix_multipliers = {
     "E": int(1e18),
     "Z": int(1e21),
     "Y": int(1e24),
+    "Ki": 1<<10,
+    "Mi": 1<<20,
+    "Gi": 1<<30,
+    "Ti": 1<<40,
+    "Pi": 1<<50,
+    "Ei": 1<<60,
+    "Zi": 1<<70,
+    "Yi": 1<<80,
 }
 
 g_command = "hr"
@@ -178,7 +186,7 @@ def main():
     hrnum = re.compile(
         r'(?P<presep>' + sep + r')'
         r'(?P<num>(-)?(([1-9][0-9]*(\.[0-9]+)?)|(0(\.[0-9]+)?)))'
-        r'(?P<mul>([numckKMGTPEZY]))'
+        r'(?P<mul>(([KMGTPEZY]i)|([numckKMGTPEZY])))'
         r'(?P<postsep>' + (sep + '|[^0-9]') + r')')
     if opt_reverse:
         num = hrnum
