@@ -297,9 +297,9 @@ class CoordSystem:
                     (self.y_max - y) / yr * (sh - 1))
 
         def d2c(x, y):
-            """Data coords -> character cell coords."""
-            return (int(round((x - self.x_min) / xr * (pw - 1))),
-                    int(round((self.y_max - y) / yr * (ph - 1))))
+            """Data coords -> character cell coords (consistent with d2s)."""
+            sx, sy = d2s(x, y)
+            return (int(round(sx)) // 2, int(round(sy)) // 4)
 
         def dot(sx, sy, clr=None):
             si, sj = int(round(sx)), int(round(sy))
@@ -351,15 +351,15 @@ class CoordSystem:
                 if 0 <= cx + i < pw and 0 <= cy < ph:
                     ovr[cy][cx + i] = (ch, None)
 
-        # Map tick values to row/col indices
+        # Map tick values to row/col indices (via d2c for consistency)
         ytr = {}
         for v, label in ylabels.items():
-            r = int(round((self.y_max - v) / yr * (ph - 1)))
+            _, r = d2c(self.x_min, v)
             if 0 <= r < ph:
                 ytr[r] = label
         xtc = {}
         for v in xt:
-            c = int(round((v - self.x_min) / xr * (pw - 1)))
+            c, _ = d2c(v, self.y_min)
             if 0 <= c < pw:
                 xtc[c] = _fmt(v)
 
