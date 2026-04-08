@@ -263,7 +263,7 @@ class CoordSystem:
         self.labels.append(obj)
         return obj
 
-    def render(self, terminal):
+    def render(self, terminal=sys.stdout):
         ts = shutil.get_terminal_size((80, 24))
 
         # Compute nice tick values
@@ -273,7 +273,7 @@ class CoordSystem:
         ylabels = {v: _fmt(v) for v in yt}
         yw = max(len(s) for s in ylabels.values()) + 1
 
-        pw = max(10, ts.columns - yw - 2)      # plot width  (chars)
+        pw = max(10, ts.columns - yw - 2)       # plot width  (chars)
         ph = max(5, ts.lines - 5)               # plot height (chars)
         sw, sh = pw * 2, ph * 4                 # sub-pixel dims
         xr = self.x_max - self.x_min or 1.0
