@@ -171,10 +171,12 @@ class CoordSystem:
     # Attributes that don't mark the coord system as dirty
     _INTERNAL = {'_prev_h', '_dirty', 'autorender', '_name_styles', '_next_ci', '_next_si'}
 
-    def __init__(self, name, minxy, maxxy, autorender=None):
+    def __init__(self, name, minxy, maxxy, autorender=None, xtitle='', ytitle=''):
         self.name = name
         self.x_min, self.y_min = float(minxy[0]), float(minxy[1])
         self.x_max, self.y_max = float(maxxy[0]), float(maxxy[1])
+        self.xtitle = xtitle
+        self.ytitle = ytitle
         self.lines = []
         self.points = []
         self.labels = []
@@ -366,9 +368,26 @@ class CoordSystem:
         # Assemble output
         out = [f'{bold} {self.name}{rst}']
 
+        # Compute ytitle placement: centered between the top two y-axis ticks
+        ytitle_rows = {}  # row -> character
+        if self.ytitle:
+            sorted_yt_rows = sorted(ytr.keys())
+            if len(sorted_yt_rows) >= 2:
+                lo, hi = sorted_yt_rows[0], sorted_yt_rows[1]
+            else:
+                lo, hi = 0, ph - 1
+            mid = (lo + hi) // 2
+            start = mid - len(self.ytitle) // 2
+            for i, ch in enumerate(self.ytitle):
+                r = start + i
+                if 0 <= r < ph:
+                    ytitle_rows[r] = ch
+
         for r in range(ph):
             if r in ytr:
                 yl = ytr[r].rjust(yw - 1) + ' ┤'
+            elif r in ytitle_rows:
+                yl = ' ' * (yw - 1) + ' ' + ytitle_rows[r]
             else:
                 yl = ' ' * (yw - 1) + ' │'
             cells = []
@@ -384,8 +403,20 @@ class CoordSystem:
                     cells.append(' ')
             out.append(yl + ''.join(cells))
 
-        # Bottom border with tick marks
+        # Bottom border with tick marks, xtitle between last two ticks
         border = ['┴' if c in xtc else '─' for c in range(pw)]
+        if self.xtitle:
+            sorted_xt_cols = sorted(xtc.keys())
+            if len(sorted_xt_cols) >= 2:
+                lo, hi = sorted_xt_cols[-2], sorted_xt_cols[-1]
+            else:
+                lo, hi = 0, pw - 1
+            mid = (lo + hi) // 2
+            start = mid - len(self.xtitle) // 2
+            for i, ch in enumerate(self.xtitle):
+                p = start + i
+                if 0 <= p < pw:
+                    border[p] = ch
         out.append(' ' * (yw - 1) + ' └' + ''.join(border))
 
         # X-axis labels
@@ -420,9 +451,11 @@ class CoordSystem:
         self._prev_h = len(out)
 
 
-def new_coords(name='coords', minxy=(0, 0), maxxy=(10, 10), autorender=None):
+def new_coords(name='coords', minxy=(0, 0), maxxy=(10, 10), autorender=None,
+               xtitle='', ytitle=''):
     """Create a new coordinate system."""
-    return CoordSystem(name, minxy, maxxy, autorender=autorender)
+    return CoordSystem(name, minxy, maxxy, autorender=autorender,
+                       xtitle=xtitle, ytitle=ytitle)
 
 
 def _autorender(env):
