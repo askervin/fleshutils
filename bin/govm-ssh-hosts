@@ -19,6 +19,7 @@ govm ls | while read id name namespace ip _; do
     if [[ "$id" == "ID" ]] || [[ -z "$ip" ]]; then
         continue
     fi
+    echo "$name"
     echo "Host $name" >> "$govm_ssh_hosts_config"
     echo "    Hostname $ip" >> "$govm_ssh_hosts_config"
     if [[ -n "$username_cmd" ]]; then

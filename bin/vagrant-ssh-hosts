@@ -40,7 +40,7 @@ for pid in $(pidof qemu-system-x86_64); do
         echo "skipping qemu pid $pid"
         continue
     fi
-    echo "found $vm_name"
+    echo "$vm_name"
     cat >> "$vagrant_ssh_hosts_config" <<EOF
 Host $vm_name
     Hostname localhost
